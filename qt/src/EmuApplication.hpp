@@ -14,7 +14,7 @@ struct EmuThread : public QThread
 {
 Q_OBJECT
   public:
-    EmuThread(QThread *main_thread);
+    explicit EmuThread(QThread *main_thread);
     QThread *main_thread;
     void run() override;
     void waitForStatusBit(int);
@@ -23,7 +23,7 @@ Q_OBJECT
     void unsetStatusBits(int);
     void pause();
     void unpause();
-    void setMainLoop(std::function<void()> loop);
+    void setMainLoop(const std::function<void()> &loop);
 
     std::function<void()> main_loop = nullptr;
 
@@ -39,7 +39,7 @@ Q_OBJECT
     int status = eDead;
 
   public slots:
-    void runOnThread(std::function<void()> func, bool blocking = false);
+    void runOnThread(const std::function<void()> &func, bool blocking = false);
 };
 
 struct EmuApplication
@@ -54,11 +54,11 @@ struct EmuApplication
 
     EmuApplication();
     ~EmuApplication();
-    bool openFile(std::string filename);
-    void handleBinding(std::string name, bool pressed);
+    bool openFile(const std::string &filename);
+    void handleBinding(const std::string &name, bool pressed);
     void updateSettings();
     void updateBindings();
-    bool isBound(EmuBinding b);
+    bool isBound(const EmuBinding &b);
     void reportBinding(EmuBinding b, bool active);
     void startInputTimer();
     void pollJoysticks();
@@ -75,9 +75,9 @@ struct EmuApplication
     bool isPaused();
     void unpause();
     void loadState(int slot);
-    void loadState(std::string filename);
+    void loadState(const std::string& filename);
     void saveState(int slot);
-    void saveState(std::string filename);
+    void saveState(const std::string& filename);
     std::string getStateFolder();
     void loadUndoState();
     void startGame();
@@ -91,12 +91,13 @@ struct EmuApplication
     void disableAllCheats();
     void enableCheat(int index);
     void disableCheat(int index);
-    bool addCheat(std::string description, std::string code);
+    bool addCheat(const std::string &description, const std::string &code);
     void deleteCheat(int index);
     void deleteAllCheats();
-    int tryImportCheats(std::string filename);
-    std::string validateCheat(std::string code);
-    int modifyCheat(int index, std::string name, std::string code);
+    int tryImportCheats(const std::string &filename);
+    std::string validateCheat(const std::string &code);
+    int modifyCheat(int index, const std::string &name,
+                    const std::string &code);
 
     enum Handler
     {

@@ -4,7 +4,7 @@
    For further information, consult the LICENSE file in the root directory.
 \*****************************************************************************/
 
-#include <signal.h>
+#include <csignal>
 #define G_LOG_USE_STRUCTURED
 #define G_LOG_DOMAIN GETTEXT_PACKAGE
 #include "gtk_compat.h"
@@ -28,26 +28,17 @@
 #include "ppu.h"
 #include "fmt/format.h"
 
-#include <iomanip>
-
-static void S9xThrottle(int);
-static void S9xCheckPointerTimer();
-static bool S9xIdleFunc();
-static bool S9xPauseFunc();
-static bool S9xScreenSaverCheckFunc();
+static void check_pointer_timer();
+static bool idle_func();
+static bool screen_saver_check_func();
 
 Snes9xWindow *top_level = nullptr;
 Snes9xConfig *gui_config = nullptr;
 StateManager state_manager;
-gint64 frame_clock = -1;
-gint64 pointer_timestamp = -1;
+static gint64 frame_clock = -1;
+static bool high_performance_idle_loop = true;
 
 Background::Particles particles(Background::Particles::Snow);
-
-static void S9xTerm(int signal)
-{
-    S9xExit();
-}
 
 int main(int argc, char *argv[])
 {
@@ -58,16 +49,17 @@ int main(int argc, char *argv[])
     bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
     textdomain(GETTEXT_PACKAGE);
 
+    auto signal_handler = [](int signal) {
+        printf("Received signal %d\n", signal);
+        S9xExit();
+    };
     struct sigaction sig_callback{};
-    sig_callback.sa_handler = S9xTerm;
-    sigaction(15, &sig_callback, NULL); // SIGTERM
-    sigaction(3, &sig_callback, NULL);  // SIGQUIT
-    sigaction(2, &sig_callback, NULL);  // SIGINT
+    sig_callback.sa_handler = signal_handler;
+    sigaction(15, &sig_callback, nullptr); // SIGTERM
+    sigaction(3, &sig_callback, nullptr);  // SIGQUIT
+    sigaction(2, &sig_callback, nullptr);  // SIGINT
 
     Settings = {};
-
-    // Original config fills out values this port doesn't.
-    S9xLoadConfigFiles(argv, argc);
 
     gui_config = new Snes9xConfig();
     gui_config->sound_drivers = S9xGetSoundDriverNames();
@@ -87,7 +79,7 @@ int main(int argc, char *argv[])
 
     top_level = new Snes9xWindow(gui_config);
 #ifdef GDK_WINDOWING_X11
-    if (!GDK_IS_X11_WINDOW(top_level->window->get_window()->gobj()))
+    if (!is_x11())
         XInitThreads();
 #endif
 
@@ -152,17 +144,15 @@ int main(int argc, char *argv[])
 
     gui_config->joysticks.flush_events();
 
-    Glib::signal_timeout().connect(sigc::ptr_fun(S9xPauseFunc), 100);
-    Glib::signal_timeout().connect(sigc::ptr_fun(S9xScreenSaverCheckFunc), 10000);
+    Glib::signal_timeout().connect_once([]() { top_level->refresh(); }, 0);
+    Glib::signal_timeout().connect(sigc::ptr_fun(screen_saver_check_func), 10000);
+    Glib::signal_idle().connect(sigc::ptr_fun(idle_func));
     app->run(*top_level->window.get());
     return 0;
 }
 
 int S9xOpenROM(const char *rom_filename)
 {
-    uint32 flags;
-    bool loaded;
-
     if (gui_config->rom_loaded)
     {
         S9xAutoSaveSRAM();
@@ -170,10 +160,9 @@ int S9xOpenROM(const char *rom_filename)
 
     S9xNetplayDisconnect();
 
-    flags = CPU.Flags;
+    uint32 flags = CPU.Flags;
 
-    loaded = false;
-
+    bool loaded = false;
     if (Settings.Multi)
         loaded = Memory.LoadMultiCart(Settings.CartAName, Settings.CartBName);
     else if (rom_filename)
@@ -203,7 +192,7 @@ int S9xOpenROM(const char *rom_filename)
         S9xMessage(
             S9X_INFO,
             S9X_NO_INFO,
-            fmt::format(_("Using rewind buffer of {0}\n"),
+            fmt::format(fmt::runtime(_("Using rewind buffer of {0}\n")),
                 Glib::format_size(
                     gui_config->rewind_buffer_size * 1024 * 1024,
                     Glib::FORMAT_SIZE_IEC_UNITS).c_str()).c_str());
@@ -236,90 +225,86 @@ void S9xNoROMLoaded()
     top_level->configure_widgets();
 }
 
-static bool S9xPauseFunc()
+static void switch_to_low_performance_idle_loop()
 {
-    static bool first_clear = false;
+    S9xSoundStop();
 
-    if (!first_clear)
+    gui_config->joysticks.flush_events();
+
+    if (Settings.NetPlay && NetPlay.Connected)
     {
-        top_level->refresh();
-        first_clear = true;
+        S9xNPSendPause(true);
     }
 
-    S9xProcessEvents(true);
+    top_level->window->queue_draw();
 
-    if (!S9xNetplayPush())
-    {
-        S9xNetplayPop();
-    }
+    /* Move to a timer-based function to use less CPU */
+    unsigned int timeout = 8;
+    if (gui_config->splash_image == SPLASH_IMAGE_STARFIELD || gui_config->splash_image == SPLASH_IMAGE_SNOW)
+        timeout = 2;
 
-    if (!Settings.Paused) /* Coming out of pause */
-    {
-        /* Clear joystick queues */
-        gui_config->joysticks.flush_events();
-
-        S9xSoundStart();
-
-        if (Settings.NetPlay && NetPlay.Connected)
-        {
-            S9xNPSendPause(false);
-        }
-
-        /* Resume high-performance callback */
-        Glib::signal_idle().connect(sigc::ptr_fun(S9xIdleFunc));
-
-        return false;
-    }
-
-    if (!gui_config->rom_loaded)
-    {
-        if (gui_config->splash_image >= SPLASH_IMAGE_STARFIELD)
-        {
-            if (gui_config->splash_image == SPLASH_IMAGE_STARFIELD)
-                particles.setmode(Background::Particles::Stars);
-            else
-                particles.setmode(Background::Particles::Snow);
-
-            S9xThrottle(THROTTLE_TIMER);
-            particles.advance();
-            particles.copyto(GFX.Screen, GFX.Pitch);
-            S9xDeinitUpdate(256, 224);
-        }
-    }
-
-    Glib::signal_timeout().connect(sigc::ptr_fun(S9xPauseFunc), 8);
-
-    return false;
+    Glib::signal_timeout().connect(sigc::ptr_fun(idle_func), timeout, Glib::PRIORITY_DEFAULT_IDLE);
+    high_performance_idle_loop = false;
 }
 
-static bool S9xIdleFunc()
+static void switch_to_high_performance_idle_loop()
 {
-    if (Settings.Paused && gui_config->rom_loaded)
+    /* Clear joystick queues */
+    gui_config->joysticks.flush_events();
+
+    S9xSoundStart();
+
+    if (Settings.NetPlay && NetPlay.Connected)
     {
-        S9xSoundStop();
-
-        gui_config->joysticks.flush_events();
-
-        if (Settings.NetPlay && NetPlay.Connected)
-        {
-            S9xNPSendPause(true);
-        }
-
-        top_level->window->queue_draw();
-
-        /* Move to a timer-based function to use less CPU */
-        Glib::signal_timeout().connect(sigc::ptr_fun(S9xPauseFunc), 8);
-        return false;
+        S9xNPSendPause(false);
     }
 
-    S9xCheckPointerTimer();
+    /* Resume high-performance callback */
+    Glib::signal_idle().connect(sigc::ptr_fun(idle_func));
+    high_performance_idle_loop = true;
+}
 
-    S9xProcessEvents(true);
+static void RunAnimatedBackgrounds()
+{
+    if (gui_config->rom_loaded || gui_config->splash_image < SPLASH_IMAGE_STARFIELD)
+        return;
 
+    if (gui_config->splash_image == SPLASH_IMAGE_STARFIELD)
+        particles.setmode(Background::Particles::Stars);
+    else
+        particles.setmode(Background::Particles::Snow);
+
+    static gint64 time = 0, last_time = 0;
+    time = g_get_monotonic_time();
+    if (time - last_time > 16666)
+    {
+        last_time = time;
+
+        auto reduce_input_lag = gui_config->reduce_input_lag;
+        gui_config->reduce_input_lag = false;
+        auto throttle = Settings.SkipFrames;
+        Settings.SkipFrames = THROTTLE_NONE;
+
+        particles.advance();
+        particles.copyto(GFX.Screen, GFX.Pitch);
+        S9xDeinitUpdate(256, 224);
+
+        Settings.SkipFrames = throttle;
+        gui_config->reduce_input_lag = reduce_input_lag;
+    }
+}
+
+static void pause_loop()
+{
+    RunAnimatedBackgrounds();
+}
+
+static void game_loop()
+{
     if (!S9xDisplayDriverIsReady())
     {
         usleep(100);
-        return true;
+        return;
     }
 
     if (!S9xNetplayPush())
@@ -347,13 +332,40 @@ static bool S9xIdleFunc()
 
         S9xNetplayPop();
     }
+}
+
+static bool idle_func()
+{
+    check_pointer_timer();
+    S9xProcessEvents(true);
+
+    if (Settings.Paused)
+    {
+        pause_loop();
+
+        if (high_performance_idle_loop)
+        {
+            switch_to_low_performance_idle_loop();
+            return false;
+        }
+    }
+
+    if (!Settings.Paused)
+    {
+        game_loop();
+
+        if (!high_performance_idle_loop)
+        {
+            switch_to_high_performance_idle_loop();
+            return false;
+        }
+    }
 
     return true;
 }
 
-static bool S9xScreenSaverCheckFunc()
+static bool screen_saver_check_func()
 {
-
     if (!Settings.Paused &&
         (gui_config->screensaver_needs_reset ||
          gui_config->prevent_screensaver))
@@ -383,35 +395,35 @@ void S9xMessage(int type, int number, const char *message)
                 case S9X_TRACE:
                 case S9X_DEBUG:
                 {
-                    g_debug(message);
+                    g_debug("%s", message);
                     break;
                 }
                 case S9X_WARNING:
                 {
-                    g_warning(message);
+                    g_warning("%s", message);
                     break;
                 }
                 case S9X_INFO:
                 {
-                    g_info(message);
-                    g_message(message);
+                    g_info("%s", message);
+                    g_message("%s", message);
                     break;
                 }
                 case S9X_ERROR:
                 {
                     // GLib’s g_critical() does not terminate the process
-                    g_critical(message);
+                    g_critical("%s", message);
                     break;
                 }
                 case S9X_FATAL_ERROR:
                 {
                     // GLib’s g_error() terminates the process
-                    g_error(message);
+                    g_error("%s", message);
                     break;
                 }
                 default:
                 {
-                    g_message(message);
+                    g_message("%s", message);
                 }
             }
         }
@@ -457,14 +469,12 @@ void S9xParseArg(char **argv, int &i, int argc)
     }
 }
 
-static void S9xThrottle(int method)
+void S9xSyncSpeed()
 {
-    gint64 now;
-
     if (S9xNetplaySyncSpeed())
         return;
 
-    now = g_get_monotonic_time();
+    gint64 now = g_get_monotonic_time();
 
     if (Settings.HighSpeedSeek > 0)
     {
@@ -503,8 +513,8 @@ static void S9xThrottle(int method)
         frame_clock = now;
     }
 
-    if (method == THROTTLE_SOUND_SYNC ||
-        method == THROTTLE_NONE)
+    if (Settings.SkipFrames == THROTTLE_SOUND_SYNC ||
+        Settings.SkipFrames == THROTTLE_NONE)
     {
         frame_clock = now;
         IPPU.SkippedFrames = 0;
@@ -512,9 +522,25 @@ static void S9xThrottle(int method)
     else // THROTTLE_TIMER or THROTTLE_TIMER_FRAMESKIP
     {
         if (S9xDisplayGetDriver()->can_throttle())
-            return;
+        {
+            IPPU.RenderThisFrame = true;
+            if (Settings.SkipFrames == THROTTLE_TIMER_FRAMESKIP)
+            {
+                auto &throttle = S9xDisplayGetDriver()->throttle;
+                auto late_frames = S9xDisplayGetDriver()->get_late_frames();
+                if (late_frames < 1.0)
+                    return;
 
-        if (method == THROTTLE_TIMER_FRAMESKIP)
+                if (late_frames >= 2.0)
+                    throttle.reset();
+                else if (late_frames >= 1.0)
+                    throttle.advance();
+                IPPU.RenderThisFrame = false;
+            }
+            return;
+        }
+
+        if (Settings.SkipFrames == THROTTLE_TIMER_FRAMESKIP)
         {
             if (now - frame_clock > Settings.FrameTime)
             {
@@ -545,14 +571,9 @@ static void S9xThrottle(int method)
     }
 }
 
-void S9xSyncSpeed()
+static void check_pointer_timer()
 {
-    S9xThrottle(Settings.SkipFrames);
-}
-
-static void S9xCheckPointerTimer()
-{
-    if (!gui_config->pointer_is_visible)
+    if (!gui_config->pointer_is_visible || top_level->is_paused())
         return;
 
     if (g_get_monotonic_time() - gui_config->pointer_timestamp > 1000000)
@@ -591,7 +612,7 @@ void S9xExit()
 
 const char *S9xStringInput(const char *message)
 {
-    return NULL;
+    return nullptr;
 }
 
 void S9xExtraUsage()

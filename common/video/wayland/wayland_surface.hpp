@@ -13,7 +13,7 @@
 class WaylandSurface
 {
   public:
-    WaylandSurface();
+    WaylandSurface() = default;
     ~WaylandSurface();
 
     struct Metrics {
@@ -22,6 +22,8 @@ class WaylandSurface
 
     bool attach(wl_display *display, wl_surface *surface, Metrics source_metrics);
     void resize(Metrics new_metrics);
+    void shrink();
+    void regrow();
     std::tuple<int, int> get_size();
     std::tuple<int, int> get_size_for_metrics(Metrics m);
 

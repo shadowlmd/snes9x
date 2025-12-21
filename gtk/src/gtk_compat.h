@@ -4,9 +4,7 @@
    For further information, consult the LICENSE file in the root directory.
 \*****************************************************************************/
 
-#ifndef __GTK_COMPAT_H
-#define __GTK_COMPAT_H
-
+#pragma once
 #include <gtkmm.h>
 
 #include <gtk/gtk.h>
@@ -20,10 +18,16 @@
 
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/gdkwayland.h>
+inline bool is_wayland()
+{
+   return GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default());
+}
 #endif
 
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
-#endif
-
+inline bool is_x11()
+{
+   return GDK_IS_X11_DISPLAY(gdk_display_get_default());
+}
 #endif

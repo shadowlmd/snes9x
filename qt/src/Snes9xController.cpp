@@ -182,7 +182,7 @@ void Snes9xController::updateSettings(const EmuConfig * const config)
 
     high_resolution_effect = config->high_resolution_effect;
 
-    config_folder = config->findConfigDir();
+    config_folder = EmuConfig::findConfigDir();
 
     auto doFolder = [&](int location, std::string &dest, const std::string &src, const char *subfolder_name)
     {
@@ -201,7 +201,7 @@ void Snes9xController::updateSettings(const EmuConfig * const config)
     doFolder(config->export_location, export_folder, config->export_folder, "export");
 }
 
-bool Snes9xController::openFile(std::string filename)
+bool Snes9xController::openFile(const std::string &filename)
 {
     if (active)
         S9xAutoSaveSRAM();
@@ -257,7 +257,6 @@ void Snes9xController::updateSoundBufferLevel(int empty, int total)
 
 bool8 S9xDeinitUpdate(int width, int height)
 {
-    static int last_width = 0;
     static int last_height = 0;
     int yoffset = 0;
 
@@ -271,7 +270,6 @@ bool8 S9xDeinitUpdate(int width, int height)
     if (last_height > height)
         memset(GFX.Screen + GFX.RealPPL * height, 0, GFX.Pitch * (last_height - height));
 
-    last_width = width;
     last_height = height;
 
     if (Settings.ShowOverscan)
@@ -309,12 +307,10 @@ bool8 S9xDeinitUpdate(int width, int height)
         if (hires_effect == EmuConfig::eScaleUp)
         {
             S9xForceHires(screen_view, GFX.Pitch, width, height);
-            last_width = width;
         }
         else if (hires_effect == EmuConfig::eScaleDown)
         {
             S9xMergeHires(screen_view, GFX.Pitch, width, height);
-            last_width = width;
         }
     }
 
@@ -349,7 +345,6 @@ void S9xSyncSpeed()
     }
 
     IPPU.RenderThisFrame = true;
-
 }
 
 void S9xParsePortConfig(ConfigFile&, int)
@@ -393,7 +388,7 @@ std::string S9xGetDirectory(s9x_getdirtype dirtype)
     }
 
     /* Check if directory exists, make it and/or set correct permissions */
-    if (dirtype != HOME_DIR && dirname != "")
+    if (dirtype != HOME_DIR && !dirname.empty())
     {
         fs::path path(dirname);
 
@@ -408,16 +403,16 @@ std::string S9xGetDirectory(s9x_getdirtype dirtype)
     }
 
     /* Anything else, use ROM filename path */
-    if (dirname == "" && !Memory.ROMFilename.empty())
+    if (dirname.empty() && !Memory.ROMFilename.empty())
     {
         fs::path path(Memory.ROMFilename);
 
         path.remove_filename();
 
         if (!fs::is_directory(path))
-            dirname = fs::current_path().u8string();
+            dirname = fs::current_path().string();
         else
-            dirname = path.u8string();
+            dirname = path.string();
     }
 
     return dirname;
@@ -473,7 +468,7 @@ std::string S9xGetFilenameInc(std::string e, enum s9x_getdirtype dirtype)
         i++;
     } while (fs::exists(new_filename));
 
-    return new_filename.u8string();
+    return new_filename.string();
 }
 
 bool8 S9xInitUpdate()
@@ -578,7 +573,7 @@ void S9xAutoSaveSRAM()
 {
     printf("%s\n", S9xGetFilename(".srm", SRAM_DIR).c_str());
     Memory.SaveSRAM(S9xGetFilename(".srm", SRAM_DIR).c_str());
-    S9xSaveCheatFile(S9xGetFilename(".cht", CHEAT_DIR).c_str());
+    S9xSaveCheatFile(S9xGetFilename(".cht", CHEAT_DIR));
 }
 
 bool Snes9xController::acceptsCommand(const char *command)
@@ -638,23 +633,58 @@ void Snes9xController::updateBindings(const EmuConfig *const config)
     for (int controller_number = 0; controller_number < 5; controller_number++)
     {
         auto &controller = config->binding.controller[controller_number];
-        for (int i = 0; i < config->num_controller_bindings; i++)
+        for (int i = 0; i < EmuConfig::num_controller_bindings; i++)
         {
-            for (int b = 0; b < config->allowed_bindings; b++)
+            for (int b = 0; b < EmuConfig::allowed_bindings; b++)
             {
-                auto binding = controller.buttons[i * config->allowed_bindings + b];
+                auto binding = controller.buttons[i * EmuConfig::allowed_bindings + b];
                 if (binding.hash() == 0)
                     continue;
                 std::string name = "Joypad" +
                                     std::to_string(controller_number + 1) + " " +
                                     snes9x_names[i];
+
                 auto cmd = S9xGetCommandT(name.c_str());
                 S9xMapButton(binding.hash(), cmd, false);
             }
         }
     }
 
-    for (int i = 0; i < config->num_shortcuts; i++)
+    for (auto &additional : config->additional_controllers)
+    {
+        const char *additional_names[] =
+        {
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "A",
+            "B",
+            "X",
+            "Y",
+            "L",
+            "R",
+            "Start",
+            "Select",
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+        };
+
+        for (int i = 0; i < std::size(additional_names); i++)
+        {
+            auto binding = additional.buttons[i];
+            if (binding.hash() == 0)
+                continue;
+            std::string name = std::string("Joypad1 ") +
+                               additional_names[i];
+            auto cmd = S9xGetCommandT(name.c_str());
+            S9xMapButton(binding.hash(), cmd, false);
+        }
+    }
+
+    for (int i = 0; i < EmuConfig::num_shortcuts; i++)
     {
         auto command = S9xGetCommandT(EmuConfig::getShortcutNames()[i]);
         if (command.type == S9xNoMapping)
@@ -729,10 +759,10 @@ bool Snes9xController::slotUsed(int slot)
 
 bool Snes9xController::loadState(int slot)
 {
-    return loadState(save_slot_path(slot).u8string());
+    return loadState(save_slot_path(slot).string());
 }
 
-bool Snes9xController::loadState(std::string filename)
+bool Snes9xController::loadState(const std::string &filename)
 {
     if (!active)
         return false;
@@ -752,7 +782,7 @@ bool Snes9xController::loadState(std::string filename)
     }
 }
 
-bool Snes9xController::saveState(std::string filename)
+bool Snes9xController::saveState(const std::string &filename)
 {
     if (!active)
         return false;
@@ -792,10 +822,10 @@ void Snes9xController::softReset()
 
 bool Snes9xController::saveState(int slot)
 {
-    return saveState(save_slot_path(slot).u8string());
+    return saveState(save_slot_path(slot).string());
 }
 
-void Snes9xController::setMessage(std::string message)
+void Snes9xController::setMessage(const std::string &message)
 {
     S9xSetInfoString(message.c_str());
 }
@@ -807,7 +837,7 @@ std::vector<std::tuple<bool, std::string, std::string>> Snes9xController::getChe
     cheat_list.reserve(Cheat.group.size());
 
     for (auto &c : Cheat.group)
-        cheat_list.push_back({ c.enabled, c.name, S9xCheatGroupToText(c) });
+        cheat_list.emplace_back(c.enabled, c.name, S9xCheatGroupToText(c));
 
     return std::move(cheat_list);
 }
@@ -830,7 +860,8 @@ void Snes9xController::disableCheat(int index)
     S9xDisableCheatGroup(index);
 }
 
-bool Snes9xController::addCheat(std::string description, std::string code)
+bool Snes9xController::addCheat(const std::string &description,
+                                const std::string &code)
 {
     return S9xAddCheatGroup(description, code) >= 0;
 }
@@ -845,17 +876,18 @@ void Snes9xController::deleteAllCheats()
     S9xDeleteCheats();
 }
 
-int Snes9xController::tryImportCheats(std::string filename)
+int Snes9xController::tryImportCheats(const std::string &filename)
 {
     return S9xImportCheatsFromDatabase(filename);
 }
 
-std::string Snes9xController::validateCheat(std::string code)
+std::string Snes9xController::validateCheat(const std::string &code)
 {
     return S9xCheatValidate(code);
 }
 
-int Snes9xController::modifyCheat(int index, std::string name, std::string code)
+int Snes9xController::modifyCheat(int index, const std::string &name,
+                                  const std::string &code)
 {
     return S9xModifyCheatGroup(index, name, code);
 }

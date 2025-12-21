@@ -10,7 +10,6 @@
 #include "common/video/vulkan/vulkan_context.hpp"
 #include "common/video/vulkan/vulkan_shader_chain.hpp"
 #include "common/video/vulkan/vulkan_simple_output.hpp"
-#include "common/video/std_chrono_throttle.hpp"
 
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
 #include "common/video/wayland/wayland_surface.hpp"
@@ -20,17 +19,18 @@ class S9xVulkanDisplayDriver : public S9xDisplayDriver
 {
   public:
     S9xVulkanDisplayDriver(Snes9xWindow *window, Snes9xConfig *config);
-    ~S9xVulkanDisplayDriver();
     void refresh() override;
     int init() override;
     void deinit() override;
     void update(uint16_t *buffer, int width, int height, int stride_in_pixels) override;
     void *get_parameters() override;
-    void save(const char *filename) override;
+    void save(const std::string &filename) override;
     bool is_ready() override;
     bool can_throttle() override { return true; }
-    int get_width() final override { return current_width; }
-    int get_height() final override { return current_height; }
+    int get_width() override { return current_width; }
+    int get_height() override { return current_height; }
+    void shrink() override;
+    void regrow() override;
 
     static int query_availability();
 
@@ -47,7 +47,6 @@ class S9xVulkanDisplayDriver : public S9xDisplayDriver
     Window xid;
     int current_width;
     int current_height;
-    Throttle throttle;
 
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
     std::unique_ptr<WaylandSurface> wayland_surface;

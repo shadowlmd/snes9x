@@ -21,7 +21,6 @@
 
 #include "gtk_s9x.h"
 #include "gtk_preferences.h"
-#include "gtk_icon.h"
 #include "gtk_display.h"
 #include "gtk_file.h"
 #include "gtk_sound.h"
@@ -31,11 +30,11 @@
 #include "gtk_s9xwindow.h"
 
 #include "fmt/format.h"
+#include <utility>
 
 #include "snes9x.h"
 #include "controls.h"
 #include "movie.h"
-#include "display.h"
 #include "apu/apu.h"
 #include "memmap.h"
 #include "cpuexec.h"
@@ -44,12 +43,13 @@
 
 static Glib::RefPtr<Gtk::FileFilter> get_save_states_file_filter()
 {
-    const char *exts[] = { "*.sst", "*.000", "*.001", "*.002", "*.003", "*.004",
-                           "*.005", "*.006", "*.007", "*.008", "*.009", nullptr };
+    const auto extensions = { "*.sst", "*.000", "*.001", "*.002", "*.003", "*.004",
+                              "*.005", "*.006", "*.007", "*.008", "*.009" };
     auto filter = Gtk::FileFilter::create();
     filter->set_name(_("Save States"));
-    for (int i = 0; exts[i]; i++)
-        filter->add_pattern(exts[i]);
+    for (auto &ext : extensions)
+        filter->add_pattern(ext);
+
     return filter;
 }
 
@@ -81,7 +81,7 @@ Snes9xWindow::Snes9xWindow(Snes9xConfig *config)
 
     if (Gtk::IconTheme::get_default()->has_icon("snes9x"))
     {
-        window->set_default_icon_name("snes9x");
+        Gtk::Window::set_default_icon_name("snes9x");
     }
     else
     {
@@ -90,15 +90,13 @@ Snes9xWindow::Snes9xWindow(Snes9xConfig *config)
         auto loader = Gdk::PixbufLoader::create();
         loader->write(mini_icon, mini_icon_size);
         loader->close();
-        auto pixbuf = loader->get_pixbuf();
-        if (pixbuf)
-            window->set_default_icon(pixbuf);
+        if (auto pixbuf = loader->get_pixbuf())
+            Gtk::Window::set_default_icon(pixbuf);
     }
 
     drawing_area = get_object<Gtk::DrawingArea>("drawingarea").get();
-
-    gtk_widget_realize(GTK_WIDGET(window->gobj()));
-    gtk_widget_realize(GTK_WIDGET(drawing_area->gobj()));
+    window->show();
+    drawing_area->show();
 
     enable_widget("shader_parameters_item", false);
 
@@ -275,43 +273,20 @@ void Snes9xWindow::connect_signals()
 
 bool Snes9xWindow::button_press(GdkEventButton *event)
 {
-    if (S9xIsMousePluggedIn())
-    {
-        switch (event->button)
-        {
-        case 1:
-            S9xReportButton(BINDING_MOUSE_BUTTON0, 1);
-            break;
-        case 2:
-            S9xReportButton(BINDING_MOUSE_BUTTON2, 1);
-            break;
-        case 3:
-            S9xReportButton(BINDING_MOUSE_BUTTON1, 1);
-            break;
-        }
-    }
-    else if (event->button == 3)
+    if (!S9xIsMousePluggedIn() && event->button == 3)
     {
         get_object<Gtk::Menu>("view_menu_menu")->popup_at_pointer(nullptr);
+        return false;
     }
+
+    S9xReportButton(BINDING_MOUSE_BUTTON0 + event->button - 1, true);
 
     return false;
 }
 
 bool Snes9xWindow::button_release(GdkEventButton *event)
 {
-    switch (event->button)
-    {
-        case 1:
-            S9xReportButton(BINDING_MOUSE_BUTTON0, 0);
-            break;
-        case 2:
-            S9xReportButton(BINDING_MOUSE_BUTTON1, 0);
-            break;
-        case 3:
-            S9xReportButton(BINDING_MOUSE_BUTTON2, 0);
-            break;
-    }
+    S9xReportButton(BINDING_MOUSE_BUTTON0 + event->button - 1, false);
 
     return false;
 }
@@ -335,10 +310,10 @@ bool Snes9xWindow::motion_notify(GdkEventMotion *event)
 
     int scale_factor = window->get_scale_factor();
 
-    snes_mouse_x = (uint16)((int)(event->x * scale_factor) - mouse_region_x) * 256 /
+    snes_mouse_x = ((int)(event->x * scale_factor) - mouse_region_x) * 256 /
                    (mouse_region_width <= 0 ? 1 : mouse_region_width);
 
-    snes_mouse_y = (uint16)((int)(event->y * scale_factor) - mouse_region_y) * (gui_config->overscan ? SNES_HEIGHT_EXTENDED : SNES_HEIGHT) /
+    snes_mouse_y = ((int)(event->y * scale_factor) - mouse_region_y) * (gui_config->overscan ? SNES_HEIGHT_EXTENDED : SNES_HEIGHT) /
                    (mouse_region_height <= 0 ? 1 : mouse_region_height);
 
     if (!config->pointer_is_visible)
@@ -358,42 +333,29 @@ void Snes9xWindow::port_activate(const char *name)
     if (!item->get_active())
         return;
 
-    if (!strcasecmp(name, "joypad1"))
-    {
-        S9xSetController(0, CTL_JOYPAD, 0, 0, 0, 0);
-    }
-    else if (!strcasecmp(name, "joypad2"))
-    {
-        S9xSetController(1, CTL_JOYPAD, 1, 0, 0, 0);
-    }
-    else if (!strcasecmp(name, "mouse1"))
-    {
-        S9xSetController(0, CTL_MOUSE, 0, 0, 0, 0);
-    }
-    else if (!strcasecmp(name, "mouse2"))
-    {
-        S9xSetController(1, CTL_MOUSE, 0, 0, 0, 0);
-    }
-    else if (!strcasecmp(name, "superscope1"))
-    {
-        S9xSetController(0, CTL_SUPERSCOPE, 0, 0, 0, 0);
-    }
-    else if (!strcasecmp(name, "superscope2"))
-    {
-        S9xSetController(1, CTL_SUPERSCOPE, 0, 0, 0, 0);
-    }
-    else if (!strcasecmp(name, "multitap1"))
-    {
-        S9xSetController(0, CTL_MP5, 0, 1, 2, 3);
-    }
-    else if (!strcasecmp(name, "multitap2"))
-    {
-        S9xSetController(1, CTL_MP5, 1, 2, 3, 4);
-    }
-    else if (!strcasecmp(name, "nothingpluggedin2"))
-    {
-        S9xSetController(1, CTL_NONE, 0, 0, 0, 0);
-    }
+    struct {
+        const char *name;
+        int port;
+        enum controllers controller;
+        int8_t id1, id2, id3, id4;
+    } map[] = {
+        { "joypad1", 0, CTL_JOYPAD, 0, 0, 0, 0 },
+        { "joypad2", 1, CTL_JOYPAD, 1, 0, 0, 0 },
+        { "mouse1", 0, CTL_MOUSE, 0, 0, 0, 0 },
+        { "mouse2", 1, CTL_MOUSE, 0, 0, 0, 0 },
+        { "superscope1", 0, CTL_SUPERSCOPE, 0, 0, 0, 0 },
+        { "superscope2", 1, CTL_SUPERSCOPE, 0, 0, 0, 0 },
+        { "multitap1", 0, CTL_MP5, 0, 1, 2, 3 },
+        { "multitap2", 1, CTL_MP5, 1, 2, 3, 4 },
+        { "nothingpluggedin2", 1, CTL_NONE, 0, 0, 0, 0}
+    };
+
+    for (auto &m : map)
+        if (!strcasecmp(m.name, name))
+        {
+            S9xSetController(m.port, m.controller, m.id1, m.id2, m.id3, m.id4);
+            break;
+        }
 }
 
 bool Snes9xWindow::event_key(GdkEventKey *event)
@@ -455,6 +417,8 @@ extern unsigned char gtk_splash_pattern[];
 void Snes9xWindow::setup_splash()
 {
     uint16 *screen_ptr = GFX.Screen;
+    if (!screen_ptr)
+        return;
 
     // Load splash image (RGB24) into Snes9x buffer (RGB15)
     last_width = 256;
@@ -518,11 +482,6 @@ void Snes9xWindow::setup_splash()
 
         return;
     }
-    return;
-
-    for (int y = 0; y < 224; y++, screen_ptr += (GFX.Pitch / 2)) {
-        memset(screen_ptr, 0, 256 * sizeof(uint16));
-    }
 }
 
 bool Snes9xWindow::draw(const Cairo::RefPtr<Cairo::Context> &cr)
@@ -532,8 +491,9 @@ bool Snes9xWindow::draw(const Cairo::RefPtr<Cairo::Context> &cr)
 
     if (!(config->fullscreen) && !(maximized_state))
     {
-        config->window_width = get_width();
-        config->window_height = get_height();
+        auto vbox = get_object<Gtk::VBox>("main_window_vbox");
+        config->window_width = vbox->get_width();
+        config->window_height = vbox->get_height();
     }
 
     if (last_width < 0)
@@ -542,12 +502,6 @@ bool Snes9xWindow::draw(const Cairo::RefPtr<Cairo::Context> &cr)
     }
 
     S9xDisplayRefresh();
-
-    if (!(config->fullscreen))
-    {
-        config->window_width = get_width();
-        config->window_height = get_height();
-    }
 
     if ((is_paused() || NetPlay.Paused) && (gui_config->splash_image < SPLASH_IMAGE_STARFIELD || gui_config->rom_loaded))
     {
@@ -563,7 +517,7 @@ void Snes9xWindow::focus_notify(bool state)
 {
     focused = state;
 
-    if (!state && config->pause_emulation_on_switch)
+    if (!state && config->pause_emulation_on_switch && !paused_from_focus_loss)
     {
         sys_pause++;
         propagate_pause_state();
@@ -579,7 +533,6 @@ void Snes9xWindow::focus_notify(bool state)
 
 void Snes9xWindow::open_multicart_dialog()
 {
-    int result;
     GtkBuilderWindow dialog_builder("multicart_dialog");
     auto dialog = Glib::RefPtr<Gtk::Dialog>::cast_static(dialog_builder.window);
 
@@ -593,7 +546,7 @@ void Snes9xWindow::open_multicart_dialog()
     slota->set_current_folder(config->last_directory);
     slotb->set_current_folder(config->last_directory);
 
-    result = dialog->run();
+    int result = dialog->run();
     dialog->hide();
 
     if (result == GTK_RESPONSE_OK)
@@ -679,11 +632,10 @@ std::string Snes9xWindow::open_movie_dialog(bool readonly)
 
 std::string Snes9xWindow::open_rom_dialog(bool run)
 {
-    const char *extensions[] = {
+    const auto extensions = {
         "*.smc", "*.SMC", "*.fig", "*.FIG", "*.sfc", "*.SFC",
         "*.jma", "*.JMA", "*.zip", "*.ZIP", "*.gd3", "*.GD3",
-        "*.swc", "*.SWC", "*.gz", "*.GZ", "*.bs", "*.BS",
-        NULL
+        "*.swc", "*.SWC", "*.gz", "*.GZ", "*.bs", "*.BS"
     };
 
     pause_from_focus_change();
@@ -695,8 +647,9 @@ std::string Snes9xWindow::open_rom_dialog(bool run)
 
     auto filter = Gtk::FileFilter::create();
     filter->set_name(_("SNES ROM Images"));
-    for (int i = 0; extensions[i]; i++)
-        filter->add_pattern(extensions[i]);
+    for (const auto &ext : extensions)
+        filter->add_pattern(ext);
+
     dialog.add_filter(filter);
     dialog.add_filter(get_all_files_filter());
 
@@ -731,7 +684,7 @@ std::string Snes9xWindow::open_rom_dialog(bool run)
     return filename;
 }
 
-bool Snes9xWindow::try_open_rom(std::string filename)
+bool Snes9xWindow::try_open_rom(const std::string &filename)
 {
     pause_from_focus_change();
 
@@ -795,7 +748,7 @@ void Snes9xWindow::movie_seek_dialog()
 
     {
         std::string str;
-        str = fmt::format(_("The current frame in the movie is <b>{0:Ld}</b>."), S9xMovieGetFrameCounter());
+        str = fmt::format(fmt::runtime(_("The current frame in the movie is <b>{0:Ld}</b>.")), S9xMovieGetFrameCounter());
         seek_dialog.get_object<Gtk::Label>("current_frame_label")->set_label(str);
 
         str = fmt::format("{0:d}", S9xMovieGetFrameCounter());
@@ -809,17 +762,14 @@ void Snes9xWindow::movie_seek_dialog()
 
     int entry_value = seek_dialog.get_entry_value("frame_entry");
 
-    switch (result)
+    if (result == Gtk::RESPONSE_OK)
     {
-    case Gtk::RESPONSE_OK:
         if (entry_value > 0 &&
             entry_value > (int)S9xMovieGetFrameCounter())
         {
             Settings.HighSpeedSeek =
                 entry_value - S9xMovieGetFrameCounter();
         }
-
-        break;
     }
 
     unpause_from_focus_change();
@@ -946,19 +896,23 @@ const char *markup = _(R"(<b>Information for %s</b>
 
 void Snes9xWindow::configure_widgets()
 {
-    enable_widget("continue_item", config->rom_loaded);
-    enable_widget("pause_item", config->rom_loaded);
-    enable_widget("reset_item", config->rom_loaded);
-    enable_widget("load_state_item", config->rom_loaded);
-    enable_widget("save_state_item", config->rom_loaded);
-    enable_widget("save_spc_item", config->rom_loaded);
-    enable_widget("hard_reset_item", config->rom_loaded);
-    enable_widget("record_movie_item", config->rom_loaded);
-    enable_widget("stop_recording_item", config->rom_loaded);
-    enable_widget("open_movie_item", config->rom_loaded);
-    enable_widget("jump_to_frame_item", config->rom_loaded);
-    enable_widget("cheats_item", config->rom_loaded);
-    enable_widget("rom_info_item", config->rom_loaded);
+    auto enable_when_rom_loaded = {
+        "continue_item",
+        "pause_item",
+        "reset_item",
+        "load_state_item",
+        "save_state_item",
+        "save_spc_item",
+        "hard_reset_item",
+        "record_movie_item",
+        "stop_recording_item",
+        "open_movie_item",
+        "jump_to_frame_item",
+        "cheats_item",
+        "rom_info_item"
+    };
+    for (auto &widget : enable_when_rom_loaded)
+        enable_widget(widget, config->rom_loaded);
 
     enable_widget("sync_clients_item",
                   config->rom_loaded &&
@@ -1016,11 +970,10 @@ void Snes9xWindow::reset_screensaver()
     if (!focused)
         return;
 
-    GdkWindow *gdk_window = window->get_window()->gobj();
     GdkDisplay *gdk_display = window->get_display()->gobj();
 
 #ifdef GDK_WINDOWING_X11
-    if (GDK_IS_X11_WINDOW(gdk_window))
+    if (is_x11())
     {
         XResetScreenSaver(GDK_DISPLAY_XDISPLAY(gdk_display));
     }
@@ -1046,7 +999,6 @@ static double XRRGetExactRefreshRate(Display *dpy, Window window)
     int version_major;
     int version_minor;
     double refresh_rate = 0.0;
-    int i;
 
     if (!XRRQueryExtension(dpy, &event_base, &error_base) ||
         !XRRQueryVersion(dpy, &version_major, &version_minor))
@@ -1060,7 +1012,7 @@ static double XRRGetExactRefreshRate(Display *dpy, Window window)
     resources = XRRGetScreenResourcesCurrent(dpy, window);
     crtc_info = XRRGetCrtcInfo(dpy, resources, resources->crtcs[0]);
 
-    for (i = 0; i < resources->nmode; i++)
+    for (int i = 0; i < resources->nmode; i++)
     {
         if (resources->modes[i].id == crtc_info->mode)
         {
@@ -1091,7 +1043,7 @@ Snes9xWindow::get_refresh_rate()
 #endif
 
 #ifdef GDK_WINDOWING_X11
-    if (GDK_IS_X11_DISPLAY(gdk_display))
+    if (is_x11())
     {
         Window xid = gdk_x11_window_get_xid(gdk_window);
         Display *dpy = gdk_x11_display_get_xdisplay(gdk_display);
@@ -1100,7 +1052,7 @@ Snes9xWindow::get_refresh_rate()
 #endif
 
 #ifdef GDK_WINDOWING_WAYLAND
-    if (GDK_IS_WAYLAND_DISPLAY(gdk_display))
+    if (is_wayland())
     {
         GdkMonitor *monitor = gdk_display_get_monitor_at_window(gdk_display, gdk_window);
         refresh_rate = (double)gdk_monitor_get_refresh_rate(monitor) / 1000.0;
@@ -1134,75 +1086,82 @@ int Snes9xWindow::get_auto_input_rate()
     double new_input_rate = refresh_rate * 32040.0 / 60.09881389744051 + 0.5;
 
     if (new_input_rate > 32040.0 * 1.05 || new_input_rate < 32040.0 * 0.95)
-        new_input_rate = 0.0;
+        new_input_rate = 32040.0;
 
-    return new_input_rate;
+    return static_cast<int>(new_input_rate);
 }
 
-#ifdef GDK_WINDOWING_X11
-static void set_bypass_compositor(Display *dpy, Window window, unsigned char bypass)
+
+void Snes9xWindow::set_bypass_compositor(bool bypass)
 {
-    uint32 value = bypass;
-    Atom net_wm_bypass_compositor = XInternAtom(dpy, "_NET_WM_BYPASS_COMPOSITOR", False);
-    XChangeProperty(dpy, window, net_wm_bypass_compositor, XA_CARDINAL, 32, PropModeReplace, (const unsigned char *)&value, 1);
-}
+#ifdef GDK_WINDOWING_X11
+    auto gdk_window = window->get_window()->gobj();
+    if (is_x11() && config->default_esc_behavior != ESC_TOGGLE_MENUBAR)
+    {
+        auto gdk_display = window->get_display()->gobj();
+        Display *dpy = gdk_x11_display_get_xdisplay(gdk_display);
+        Window window = gdk_x11_window_get_xid(gdk_window);
+        uint32 value = bypass;
+        Atom net_wm_bypass_compositor = XInternAtom(dpy, "_NET_WM_BYPASS_COMPOSITOR", False);
+        XChangeProperty(dpy, window, net_wm_bypass_compositor, XA_CARDINAL, 32, PropModeReplace, (const unsigned char *)&value, 1);
+    }
 #endif
+}
+
+void Snes9xWindow::set_custom_video_mode(bool enable)
+{
+#ifdef GDK_WINDOWING_X11
+    GdkDisplay *gdk_display = window->get_display()->gobj();
+
+    if (!is_x11())
+        return;
+
+    Display *dpy = gdk_x11_display_get_xdisplay(gdk_display);
+
+    RRMode id = 0;
+    if (enable)
+        id = config->xrr_screen_resources->modes[config->xrr_index].id;
+    else
+        id = config->xrr_crtc_info->mode;
+
+    if (XRRSetCrtcConfig(dpy,
+                         config->xrr_screen_resources,
+                         config->xrr_screen_resources->crtcs[0],
+                         CurrentTime,
+                         config->xrr_crtc_info->x,
+                         config->xrr_crtc_info->y,
+                         id,
+                         config->xrr_crtc_info->rotation,
+                         &config->xrr_crtc_info->outputs[0],
+                         1) != 0)
+    {
+        config->change_display_resolution = false;
+    }
+
+    if (gui_config->auto_input_rate)
+    {
+        Settings.SoundInputRate = top_level->get_auto_input_rate();
+        S9xUpdateDynamicRate(1, 2);
+    }
+#endif
+}
 
 void Snes9xWindow::enter_fullscreen_mode()
 {
-    int rom_loaded = config->rom_loaded;
+    bool rom_loaded = config->rom_loaded;
 
     if (config->fullscreen)
         return;
 
-    GdkDisplay *gdk_display = window->get_display()->gobj();
-    GdkWindow *gdk_window = window->get_window()->gobj();
 
-    config->rom_loaded = 0;
+    config->rom_loaded = false;
+    config->fullscreen = true;
 
-    nfs_width = config->window_width;
-    nfs_height = config->window_height;
-    int nfs_x;
-    int nfs_y;
-    window->get_position(nfs_x, nfs_y);
-
-#ifdef GDK_WINDOWING_X11
-    if (config->change_display_resolution && GDK_IS_X11_WINDOW(gdk_window))
-    {
-        Display *dpy = gdk_x11_display_get_xdisplay(gdk_display);
-
-        auto xrr_screen_resources = XRRGetScreenResourcesCurrent(dpy, gdk_x11_window_get_xid(gdk_window));
-        auto xrr_crtc_info = XRRGetCrtcInfo(dpy,
-                                            xrr_screen_resources,
-                                            xrr_screen_resources->crtcs[0]);
-
-
-        gdk_display_sync(gdk_display);
-        if (XRRSetCrtcConfig(dpy,
-                             xrr_screen_resources,
-                             xrr_screen_resources->crtcs[0],
-                             CurrentTime,
-                             xrr_crtc_info->x,
-                             xrr_crtc_info->y,
-                             xrr_screen_resources->modes[config->xrr_index].id,
-                             xrr_crtc_info->rotation,
-                             &xrr_crtc_info->outputs[0],
-                             1) != 0)
-        {
-            config->change_display_resolution = 0;
-        }
-        XRRFreeCrtcInfo(xrr_crtc_info);
-        XRRFreeScreenResources(xrr_screen_resources);
-
-        if (gui_config->auto_input_rate)
-        {
-            Settings.SoundInputRate = top_level->get_auto_input_rate();
-            S9xUpdateDynamicRate(1, 2);
-        }
-    }
-#endif
+    if (config->change_display_resolution)
+        set_custom_video_mode(true);
 
     /* Make sure everything is done synchronously */
+    GdkDisplay *gdk_display = window->get_display()->gobj();
     gdk_display_sync(gdk_display);
     window->fullscreen();
     gdk_display_sync(gdk_display);
@@ -1223,18 +1182,8 @@ void Snes9xWindow::enter_fullscreen_mode()
         S9xDisplayRefresh();
     }
 
-#ifdef GDK_WINDOWING_X11
-    if (GDK_IS_X11_WINDOW(window->get_window()->gobj()) &&
-        config->default_esc_behavior != ESC_TOGGLE_MENUBAR)
-    {
-        set_bypass_compositor(gdk_x11_display_get_xdisplay(gdk_display),
-                              gdk_x11_window_get_xid(gdk_window),
-                              1);
-    }
-#endif
-    config->fullscreen = 1;
+    set_bypass_compositor(true);
     config->rom_loaded = rom_loaded;
-
 
     /* If we're running a game, disable ui when entering fullscreen */
     if (!Settings.Paused && config->rom_loaded)
@@ -1245,7 +1194,7 @@ void Snes9xWindow::enter_fullscreen_mode()
 
 void Snes9xWindow::leave_fullscreen_mode()
 {
-    int rom_loaded = config->rom_loaded;
+    bool rom_loaded = config->rom_loaded;
 
     if (!config->fullscreen)
         return;
@@ -1260,74 +1209,30 @@ void Snes9xWindow::leave_fullscreen_mode()
         S9xDisplayRefresh();
     }
 
-    GdkDisplay *gdk_display = window->get_display()->gobj();
-    GdkWindow *gdk_window = window->get_window()->gobj();
+    config->rom_loaded = false;
 
-    config->rom_loaded = 0;
+    if (config->change_display_resolution)
+        set_custom_video_mode(false);
 
-#ifdef GDK_WINDOWING_X11
-    if (config->change_display_resolution && GDK_IS_X11_WINDOW(gdk_window))
-    {
-        Display *dpy = gdk_x11_display_get_xdisplay(gdk_display);
-
-        if (config->xrr_index > config->xrr_screen_resources->nmode)
-            config->xrr_index = 0;
-
-        gdk_display_sync(gdk_display);
-        XRRSetCrtcConfig(dpy,
-                         config->xrr_screen_resources,
-                         config->xrr_screen_resources->crtcs[0],
-                         CurrentTime,
-                         config->xrr_crtc_info->x,
-                         config->xrr_crtc_info->y,
-                         config->xrr_crtc_info->mode,
-                         config->xrr_crtc_info->rotation,
-                         &config->xrr_crtc_info->outputs[0],
-                         1);
-
-        if (gui_config->auto_input_rate)
-        {
-            Settings.SoundInputRate = top_level->get_auto_input_rate();
-            S9xUpdateDynamicRate(1, 2);
-        }
-    }
-#endif
-
-#ifdef GDK_WINDOWING_WAYLAND
-    if (GDK_IS_WAYLAND_WINDOW(gdk_window))
-    {
-        S9xDeinitDisplay();
-    }
-#endif
+    // If the window is covered by a subsurface, for some reason Gtk doesn't
+    // send any resize events or do anything to resize the window. So shrink
+    // the subsurface's viewport to 2x2 temporarily.
+    auto driver = S9xDisplayGetDriver();
+    if (driver)
+        driver->shrink();
 
     window->unfullscreen();
-
     window->show();
 
-#ifdef GDK_WINDOWING_X11
-    if (GDK_IS_X11_WINDOW(gdk_window))
-    {
-        set_bypass_compositor(gdk_x11_display_get_xdisplay(gdk_display),
-                              gdk_x11_window_get_xid(gdk_window),
-                              0);
-    }
-#endif
-
-    resize(nfs_width, nfs_height);
-    window->move(nfs_x, nfs_y);
+    set_bypass_compositor(false);
 
     config->rom_loaded = rom_loaded;
-    config->fullscreen = 0;
+    config->fullscreen = false;
     configure_widgets();
     window->show();
 
-#ifdef GDK_WINDOWING_WAYLAND
-    if (GDK_IS_WAYLAND_WINDOW(gdk_window))
-    {
-        S9xReinitDisplay();
-    }
-#endif
-
+    if (driver)
+        driver->regrow();
 }
 
 void Snes9xWindow::resize_viewport(int width, int height)
@@ -1359,11 +1264,11 @@ void Snes9xWindow::center_mouse()
     int y;
 
     window->get_window()->get_origin(x, y);
-    int w = window->get_width();
-    int h = window->get_height();
+    int half_w = window->get_width() / 2;
+    int half_h = window->get_height() / 2;
 
-    gdk_mouse_x = x + w / 2;
-    gdk_mouse_y = y + h / 2;
+    gdk_mouse_x = x + half_w;
+    gdk_mouse_y = y + half_h;
 
     window->get_display()->get_default_seat()->get_pointer()->warp(window->get_screen(), gdk_mouse_x, gdk_mouse_y);
 }
@@ -1405,13 +1310,13 @@ void Snes9xWindow::show()
         recent_menu->set_sort_type(Gtk::RECENT_SORT_MRU);
         get_object<Gtk::MenuItem>("open_recent_item")->set_submenu(*recent_menu);
         recent_menu->signal_item_activated().connect([&] {
-            try_open_rom(Glib::filename_from_uri(recent_menu->get_current_uri()).c_str());
+            try_open_rom(Glib::filename_from_uri(recent_menu->get_current_uri()));
         });
 
         recent_menu->show();
 
         auto clear_recent = get_object<Gtk::MenuItem>("clear_recent_items");
-        clear_recent->signal_activate().connect([&] {
+        clear_recent->signal_activate().connect([] {
             auto manager = Gtk::RecentManager::get_default();
             auto items = manager->get_items();
             for (auto &i : items)
@@ -1528,41 +1433,47 @@ void Snes9xWindow::update_accelerators()
     }
     accelerators.clear();
 
-    set_accelerator_to_binding("fullscreen_item", "GTK_fullscreen");
-    set_accelerator_to_binding("reset_item", "SoftReset");
-    set_accelerator_to_binding("save_state_0", "QuickSave000");
-    set_accelerator_to_binding("save_state_1", "QuickSave001");
-    set_accelerator_to_binding("save_state_2", "QuickSave002");
-    set_accelerator_to_binding("save_state_3", "QuickSave003");
-    set_accelerator_to_binding("save_state_4", "QuickSave004");
-    set_accelerator_to_binding("save_state_5", "QuickSave005");
-    set_accelerator_to_binding("save_state_6", "QuickSave006");
-    set_accelerator_to_binding("save_state_7", "QuickSave007");
-    set_accelerator_to_binding("save_state_8", "QuickSave008");
-    set_accelerator_to_binding("save_state_9", "QuickSave009");
-    set_accelerator_to_binding("load_state_0", "QuickLoad000");
-    set_accelerator_to_binding("load_state_1", "QuickLoad001");
-    set_accelerator_to_binding("load_state_2", "QuickLoad002");
-    set_accelerator_to_binding("load_state_3", "QuickLoad003");
-    set_accelerator_to_binding("load_state_4", "QuickLoad004");
-    set_accelerator_to_binding("load_state_5", "QuickLoad005");
-    set_accelerator_to_binding("load_state_6", "QuickLoad006");
-    set_accelerator_to_binding("load_state_7", "QuickLoad007");
-    set_accelerator_to_binding("load_state_8", "QuickLoad008");
-    set_accelerator_to_binding("load_state_9", "QuickLoad009");
-    set_accelerator_to_binding("pause_item", "GTK_pause");
-    set_accelerator_to_binding("save_spc_item", "GTK_save_spc");
-    set_accelerator_to_binding("open_rom_item", "GTK_open_rom");
-    set_accelerator_to_binding("record_movie_item", "BeginRecordingMovie");
-    set_accelerator_to_binding("open_movie_item", "LoadMovie");
-    set_accelerator_to_binding("stop_recording_item", "EndRecordingMovie");
-    set_accelerator_to_binding("jump_to_frame_item", "GTK_seek_to_frame");
-    set_accelerator_to_binding("reset_item", "SoftReset");
-    set_accelerator_to_binding("hard_reset_item", "Reset");
-    set_accelerator_to_binding("exit_item", "GTK_quit");
+    std::initializer_list<const char *[2]> pairs  =
+    {
+        { "fullscreen_item", "GTK_fullscreen" },
+        { "reset_item", "SoftReset" },
+        { "save_state_0", "QuickSave000" },
+        { "save_state_1", "QuickSave001" },
+        { "save_state_2", "QuickSave002" },
+        { "save_state_3", "QuickSave003" },
+        { "save_state_4", "QuickSave004" },
+        { "save_state_5", "QuickSave005" },
+        { "save_state_6", "QuickSave006" },
+        { "save_state_7", "QuickSave007" },
+        { "save_state_8", "QuickSave008" },
+        { "save_state_9", "QuickSave009" },
+        { "load_state_0", "QuickLoad000" },
+        { "load_state_1", "QuickLoad001" },
+        { "load_state_2", "QuickLoad002" },
+        { "load_state_3", "QuickLoad003" },
+        { "load_state_4", "QuickLoad004" },
+        { "load_state_5", "QuickLoad005" },
+        { "load_state_6", "QuickLoad006" },
+        { "load_state_7", "QuickLoad007" },
+        { "load_state_8", "QuickLoad008" },
+        { "load_state_9", "QuickLoad009" },
+        { "pause_item", "GTK_pause" },
+        { "save_spc_item", "GTK_save_spc" },
+        { "open_rom_item", "GTK_open_rom" },
+        { "record_movie_item", "BeginRecordingMovie" },
+        { "open_movie_item", "LoadMovie" },
+        { "stop_recording_item", "EndRecordingMovie" },
+        { "jump_to_frame_item", "GTK_seek_to_frame" },
+        { "reset_item", "SoftReset" },
+        { "hard_reset_item", "Reset" },
+        { "exit_item", "GTK_quit" },
+        // Special UI assignment
+        { "hide_ui", "Escape Key" }
+    };
 
-    // Special UI assignment
-    set_accelerator_to_binding("hide_ui", "Escape Key");
+    for (auto &[accelerator, binding_name] : pairs) {
+        set_accelerator_to_binding(accelerator, binding_name);
+    }
 }
 
 void Snes9xWindow::resize_to_multiple(int factor)

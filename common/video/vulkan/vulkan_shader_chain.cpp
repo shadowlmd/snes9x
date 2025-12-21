@@ -1,7 +1,10 @@
+#include <cassert>
+
 #include "vulkan_shader_chain.hpp"
 #include "slang_helpers.hpp"
 #include "stb_image.h"
 #include "vulkan/vulkan_enums.hpp"
+#include "vulkan_common.hpp"
 
 namespace Vulkan
 {
@@ -24,6 +27,7 @@ ShaderChain::~ShaderChain()
 {
     if (context && context->device)
     {
+        context->wait_idle();
         if (vertex_buffer)
             context->allocator.destroyBuffer(vertex_buffer, vertex_buffer_allocation);
         vertex_buffer = nullptr;
@@ -44,22 +48,19 @@ void ShaderChain::construct_buffer_objects()
 
         for (auto &uniform : pipeline.shader->uniforms)
         {
-            void *location = 0;
+            void *location = nullptr;
             const float MVP[16] = { 1.0f, 0.0f, 0.0f, 0.0f,
                                     0.0f, 1.0f, 0.0f, 0.0f,
                                     0.0f, 0.0f, 1.0f, 0.0f,
                                     0.0f, 0.0f, 0.0f, 1.0f };
 
-            std::string block;
             switch (uniform.block)
             {
                 case SlangShader::Uniform::UBO:
                     location = &ubo_memory[uniform.offset];
-                    block = "uniform";
                     break;
                 case SlangShader::Uniform::PushConstant:
                     location = &pipeline.push_constants[uniform.offset];
-                    block = "push constant";
                     break;
             }
 
@@ -187,7 +188,7 @@ void ShaderChain::update_and_propagate_sizes(int original_width_new, int origina
     }
 }
 
-bool ShaderChain::load_shader_preset(std::string filename)
+bool ShaderChain::load_shader_preset(const std::string &filename)
 {
     if (!ends_with(filename, ".slangp"))
         printf("Warning: loading preset without .slangp extension\n");
@@ -231,7 +232,7 @@ bool ShaderChain::load_shader_preset(std::string filename)
 
         if (p.ubo_size)
             num_ubos++;
-        if (p.samplers.size() > 0)
+        if (!p.samplers.empty())
             num_samplers += p.samplers.size();
     }
 
@@ -416,6 +417,7 @@ bool ShaderChain::do_frame_without_swap(uint8_t *data, int width, int height, in
     {
         auto &pipe = *pipelines[i];
         auto &frame = pipe.frame[current_frame_index];
+        bool is_last_pass = (i == pipelines.size() - 1);
 
         update_descriptor_set(cmd, i, current_frame_index);
 
@@ -428,7 +430,7 @@ bool ShaderChain::do_frame_without_swap(uint8_t *data, int width, int height, in
             .setRenderArea(vk::Rect2D({}, vk::Extent2D(frame.image.image_width, frame.image.image_height)))
             .setClearValues(value);
 
-        if (i == pipelines.size() - 1)
+        if (is_last_pass)
             context->swapchain->begin_render_pass();
         else
             cmd.beginRenderPass(render_pass_begin_info, vk::SubpassContents::eInline);
@@ -436,55 +438,39 @@ bool ShaderChain::do_frame_without_swap(uint8_t *data, int width, int height, in
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipe.pipeline.get());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipe.pipeline_layout.get(), 0, frame.descriptor_set.get(), {});
         cmd.bindVertexBuffers(0, vertex_buffer, { 0 });
-        if (pipe.push_constants.size() > 0)
+        if (!pipe.push_constants.empty())
             cmd.pushConstants(pipe.pipeline_layout.get(), vk::ShaderStageFlagBits::eAllGraphics, 0, pipe.push_constants.size(), pipe.push_constants.data());
 
-        if (i < pipelines.size() - 1)
-        {
-            cmd.setViewport(0, vk::Viewport(0, 0, pipe.destination_width, pipe.destination_height, 0.0f, 1.0f));
-            cmd.setScissor(0, vk::Rect2D({}, vk::Extent2D(pipe.destination_width, pipe.destination_height)));
-        }
-        else
+        if (is_last_pass)
         {
             cmd.setViewport(0, vk::Viewport(viewport_x, viewport_y, viewport_width, viewport_height, 0.0f, 1.0f));
             cmd.setScissor(0, vk::Rect2D(vk::Offset2D(viewport_x, viewport_y), vk::Extent2D(viewport_width, viewport_height)));
         }
-        cmd.draw(3, 1, 0, 0);
-
-        if (i < pipelines.size() - 1)
-        {
-            cmd.endRenderPass();
-        }
         else
         {
-            context->swapchain->end_render_pass();
+            cmd.setViewport(0, vk::Viewport(0, 0, pipe.destination_width, pipe.destination_height, 0.0f, 1.0f));
+            cmd.setScissor(0, vk::Rect2D({}, vk::Extent2D(pipe.destination_width, pipe.destination_height)));
         }
 
+        cmd.draw(3, 1, 0, 0);
+
+        if (is_last_pass)
+            context->swapchain->end_render_pass();
+        else
+            cmd.endRenderPass();
+
         frame.image.barrier(cmd);
-        if (i < pipelines.size() - 1)
+        if (!is_last_pass)
             frame.image.generate_mipmaps(cmd);
 
-        if (preset->last_pass_uses_feedback && i == pipelines.size() - 1)
+        if (preset->last_pass_uses_feedback && is_last_pass)
         {
-            std::array<vk::ImageMemoryBarrier, 2> image_memory_barrier{};
-            image_memory_barrier[0]
-                .setImage(frame.image.image)
-                .setOldLayout(vk::ImageLayout::eUndefined)
-                .setNewLayout(vk::ImageLayout::eTransferDstOptimal)
-                .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
-                .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
-                .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-            image_memory_barrier[1]
-                .setImage(context->swapchain->get_image())
-                .setOldLayout(vk::ImageLayout::ePresentSrcKHR)
-                .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
-                .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
-                .setDstAccessMask(vk::AccessFlagBits::eTransferRead)
-                .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-
-            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                                vk::PipelineStageFlagBits::eTransfer,
-                                {}, {}, {}, image_memory_barrier);
+            image_layout_transition(cmd, frame.image.image,
+                                    vk::ImageLayout::eUndefined,
+                                    vk::ImageLayout::eTransferDstOptimal);
+            image_layout_transition(cmd, context->swapchain->get_image(),
+                                    vk::ImageLayout::ePresentSrcKHR,
+                                    vk::ImageLayout::eTransferSrcOptimal);
 
             auto image_blit = vk::ImageBlit{}
                 .setSrcOffsets({ vk::Offset3D(viewport_x, viewport_y, 0), vk::Offset3D(viewport_x + viewport_width, viewport_y + viewport_height, 1) })
@@ -494,22 +480,12 @@ bool ShaderChain::do_frame_without_swap(uint8_t *data, int width, int height, in
 
             cmd.blitImage(context->swapchain->get_image(), vk::ImageLayout::eTransferSrcOptimal, frame.image.image, vk::ImageLayout::eTransferDstOptimal, image_blit, vk::Filter::eNearest);
 
-            image_memory_barrier[0]
-                .setOldLayout(vk::ImageLayout::eTransferDstOptimal)
-                .setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal)
-                .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-                .setDstAccessMask(vk::AccessFlagBits::eShaderRead)
-                .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-            image_memory_barrier[1]
-                .setOldLayout(vk::ImageLayout::eTransferSrcOptimal)
-                .setNewLayout(vk::ImageLayout::ePresentSrcKHR)
-                .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-                .setDstAccessMask(vk::AccessFlagBits::eMemoryRead)
-                .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-
-            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                vk::PipelineStageFlagBits::eAllGraphics,
-                                {}, {}, {}, image_memory_barrier);
+            image_layout_transition(cmd, frame.image.image,
+                                    vk::ImageLayout::eTransferDstOptimal,
+                                    vk::ImageLayout::eShaderReadOnlyOptimal);
+            image_layout_transition(cmd, context->swapchain->get_image(),
+                                    vk::ImageLayout::eTransferSrcOptimal,
+                                    vk::ImageLayout::ePresentSrcKHR);
 
             frame.image.current_layout = vk::ImageLayout::eTransferDstOptimal;
         }
@@ -525,32 +501,33 @@ bool ShaderChain::do_frame_without_swap(uint8_t *data, int width, int height, in
 void ShaderChain::upload_original(vk::CommandBuffer cmd, uint8_t *data, int width, int height, int stride, vk::Format format)
 {
     std::unique_ptr<Texture> texture;
-
-    auto create_texture = [&]() {
-        texture->create(width,
-                        height,
-                        format,
-                        wrap_mode_from_string(pipelines[0]->shader->wrap_mode),
-                        pipelines[0]->shader->filter_linear,
-                        pipelines[0]->shader->mipmap_input);
-    };
+    bool create_texture = false;
 
     if (original.size() > original_history_size)
     {
         texture = std::move(original.back());
         original.pop_back();
+
         if (texture->image_width != width || texture->image_height != height || texture->format != format)
         {
             texture->destroy();
-            create_texture();
+            create_texture = true;
         }
     }
     else
     {
         texture = std::make_unique<Texture>();
         texture->init(context);
-        create_texture();
+        create_texture = true;
     }
+
+    if (create_texture)
+        texture->create(width,
+                        height,
+                        format,
+                        wrap_mode_from_string(pipelines[0]->shader->wrap_mode),
+                        pipelines[0]->shader->filter_linear,
+                        pipelines[0]->shader->mipmap_input);
 
     if (cmd)
         texture->from_buffer(cmd, data, width, height, stride);
@@ -567,7 +544,7 @@ void ShaderChain::upload_original(uint8_t *data, int width, int height, int stri
 
 bool ShaderChain::load_lookup_textures()
 {
-    if (preset->textures.size() < 1)
+    if (preset->textures.empty())
         return true;
 
     lookup_textures.clear();

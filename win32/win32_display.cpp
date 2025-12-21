@@ -698,7 +698,7 @@ int WinGetAutomaticInputRate(void)
     double newInputRate = refreshRate * 32040.0 / 60.09881389744051 + 0.5;
 
     if (newInputRate > 32040.0 * 1.05 || newInputRate < 32040.0 * 0.95)
-        newInputRate = 0.0;
+        newInputRate = 32040.0;
 
     return (int)newInputRate;
 }
@@ -708,7 +708,7 @@ void WinThrottleFramerate()
 	static HANDLE throttle_timer = nullptr;
 	static int64_t PCBase, PCFrameTime, PCFrameTimeNTSC, PCFrameTimePAL, PCStart, PCEnd;
 
-	if (Settings.SkipFrames != AUTO_FRAMERATE || Settings.TurboMode)
+	if (Settings.SkipFrames != AUTO_FRAMERATE || Settings.TurboMode || Settings.NetPlay || Settings.NetPlayServer)
 		return;
 
 	if (!throttle_timer)

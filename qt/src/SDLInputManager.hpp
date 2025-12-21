@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include <map>
 #include <vector>
 #include <string>
@@ -12,10 +12,13 @@ struct SDLInputDevice
 
     int index;
     int sdl_joystick_number;
-    bool is_controller;
-    SDL_GameController *controller = nullptr;
+    bool is_gamepad;
+    SDL_Gamepad *gamepad = nullptr;
     SDL_Joystick *joystick = nullptr;
-    SDL_JoystickID instance_id;
+    SDL_JoystickID instance_id = 0;
+    int num_buttons;
+    int num_axes;
+    int num_hats;
 
     struct Axis
     {
@@ -29,8 +32,6 @@ struct SDLInputDevice
         uint8_t state;
     };
     std::vector<Hat> hats;
-
-    std::vector<bool> buttons;
 };
 
 struct SDLInputManager
@@ -38,13 +39,14 @@ struct SDLInputManager
     SDLInputManager();
     ~SDLInputManager();
 
-    std::optional<SDL_Event> ProcessEvent();
+    std::optional<SDL_Event> processEvent();
     std::vector<std::pair<int, std::string>> getXInputControllers();
-    void ClearEvents();
-    void AddDevice(int i);
-    void RemoveDevice(int i);
-    void PrintDevices();
-    int FindFirstOpenIndex();
+    void clearEvents();
+    void addDevice(int i);
+    void removeDevice(int i);
+    void printDevices();
+    int findFirstOpenIndex();
+    static std::map<std::pair<int, int>, SDL_GamepadBinding> getXInputButtonBindings(SDL_Gamepad *gamepad);
 
     struct DiscreteAxisEvent
     {
@@ -53,7 +55,7 @@ struct SDLInputManager
         int direction;
         int pressed;
     };
-    std::optional<DiscreteAxisEvent> DiscretizeJoyAxisEvent(SDL_Event &event);
+    std::vector<DiscreteAxisEvent> discretizeJoyAxisEvent(SDL_Event &event, int threshold_percent = 33);
 
     struct DiscreteHatEvent
     {
@@ -62,7 +64,7 @@ struct SDLInputManager
         int direction;
         bool pressed;
     };
-    std::optional<DiscreteHatEvent> DiscretizeHatEvent(SDL_Event &event);
+    std::vector<DiscreteHatEvent> discretizeHatEvent(SDL_Event &event);
 
     std::map<SDL_JoystickID, SDLInputDevice> devices;
 };

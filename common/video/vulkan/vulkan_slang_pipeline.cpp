@@ -1,11 +1,9 @@
 #include "vulkan_slang_pipeline.hpp"
-#include "slang_helpers.hpp"
-#include <unordered_map>
 
 namespace Vulkan
 {
 
-static VkFormat format_string_to_format(std::string target, VkFormat default_format)
+static VkFormat format_string_to_format(const std::string &target, VkFormat default_format)
 {
     struct
     {
@@ -53,28 +51,16 @@ static VkFormat format_string_to_format(std::string target, VkFormat default_for
     return default_format;
 }
 
-vk::SamplerAddressMode wrap_mode_from_string(std::string s)
+vk::SamplerAddressMode wrap_mode_from_string(const std::string &mode_string)
 {
-    if (s == "clamp_to_border")
+    if (mode_string == "clamp_to_border")
         return vk::SamplerAddressMode::eClampToBorder;
-    if (s == "repeat")
+    if (mode_string == "repeat")
         return vk::SamplerAddressMode::eRepeat;
-    if (s == "mirrored_repeat")
+    if (mode_string == "mirrored_repeat")
         return vk::SamplerAddressMode::eMirroredRepeat;
 
     return vk::SamplerAddressMode::eClampToBorder;
-}
-
-SlangPipeline::SlangPipeline()
-{
-    device = nullptr;
-    shader = nullptr;
-    uniform_buffer = nullptr;
-    uniform_buffer_allocation = nullptr;
-    source_width = 0;
-    source_height = 0;
-    destination_width = 0;
-    destination_height = 0;
 }
 
 void SlangPipeline::init(Context *context_, SlangShader *shader_)
@@ -130,7 +116,7 @@ bool SlangPipeline::generate_pipeline(bool lastpass)
         .setAttachment(0)
         .setLayout(vk::ImageLayout::eColorAttachmentOptimal);
 
-    std::array<vk::SubpassDependency, 2> subpass_dependency;
+    std::array<vk::SubpassDependency, 1> subpass_dependency;
     subpass_dependency[0]
         .setSrcSubpass(VK_SUBPASS_EXTERNAL)
         .setDstSubpass(0)
@@ -138,14 +124,6 @@ bool SlangPipeline::generate_pipeline(bool lastpass)
         .setSrcAccessMask(vk::AccessFlagBits(0))
         .setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
         .setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite);
-
-    subpass_dependency[1]
-        .setSrcSubpass(VK_SUBPASS_EXTERNAL)
-        .setDstSubpass(0)
-        .setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
-        .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
-        .setDstStageMask(vk::PipelineStageFlagBits::eFragmentShader)
-        .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
 
     auto subpass_description = vk::SubpassDescription{}
         .setColorAttachments(attachment_reference)

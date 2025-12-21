@@ -7,7 +7,6 @@
 #include "gtk_s9x.h"
 #include "gtk_cheat.h"
 #include "cheats.h"
-#include "display.h"
 
 enum {
     COLUMN_ENABLED = 0,
@@ -15,8 +14,6 @@ enum {
     COLUMN_CHEAT = 2,
     NUM_COLS
 };
-
-extern SCheatData Cheat;
 
 static void display_errorbox(const char *error)
 {
@@ -96,10 +93,6 @@ Snes9xCheats::Snes9xCheats()
     get_object<Gtk::Button>("cheat_search_button")->signal_clicked().connect(sigc::mem_fun(*this, &Snes9xCheats::search_database));
 
     gtk_widget_realize(GTK_WIDGET(window->gobj()));
-}
-
-Snes9xCheats::~Snes9xCheats()
-{
 }
 
 void Snes9xCheats::enable_dnd(bool enable)
@@ -198,11 +191,15 @@ void Snes9xCheats::refresh_tree_view()
 
     auto list_size = store->children().size();
 
-    if (Cheat.group.size() == 0)
+    if (Cheat.group.empty())
         return;
 
-    for (unsigned int i = 0; i < Cheat.group.size() - list_size; i++)
-        store->append();
+    if (list_size > Cheat.group.size())
+        for (size_t i = 0; i < list_size - Cheat.group.size(); i++)
+            store->erase(store->get_iter("0"));
+    if (list_size < Cheat.group.size())
+        for (size_t i = 0; i < Cheat.group.size() - list_size; i++)
+            store->append();
 
     auto iter = store->children().begin();
     for (unsigned int i = 0; i < Cheat.group.size (); i++)
@@ -281,9 +278,8 @@ void Snes9xCheats::delete_all_cheats()
 
 void Snes9xCheats::search_database()
 {
-    std::string filename;
-    int result;
-    int reason = 0;
+    int error_code = 0;
+    std::string title, details;
 
     for (const auto &dir : { S9xGetDirectory(CHEAT_DIR),
                              get_config_dir(),
@@ -291,23 +287,36 @@ void Snes9xCheats::search_database()
                              std::string("/usr/share/snes9x"),
                              std::string("/usr/local/share/snes9x") })
     {
-        filename = dir + "/cheats.bml";
-        result = S9xImportCheatsFromDatabase(filename);
+        std::string filename = dir + "/cheats.bml";
+        int result = S9xImportCheatsFromDatabase(filename);
         if (result == 0)
         {
+            error_code = 0;
+            title = _("Added Codes");
+            details = _("Found and added codes from database: ") + filename;
             refresh_tree_view();
-            return;
+            break;
         }
 
-        if (result < reason)
-            reason = result;
+        if (result < error_code)
+            error_code = result;
     }
 
-    auto dialog = Gtk::MessageDialog(*window.get(), reason == -1 ? _("Couldn't Find Cheats Database") : _("No Matching Game Found"), true);
-    dialog.set_secondary_text(reason == -1 ? _("The database file <b>cheats.bml</b> was not found. It is normally installed with "
-                                               "Snes9x, but you may also place a custom copy in your configuration or cheats directory.")
-                                           : _("No matching game was found in the databases. If you are using a non-official "
-                                               "translation or modified copy, you may be able to find and manually enter the codes."), true);
+    if (error_code == -1)
+    {
+        title = _("Couldn't Find Cheats Database");
+        details = _("The database file <b>cheats.bml</b> was not found. It is normally installed with "
+            "Snes9x, but you may also place a custom copy in your configuration or cheats directory.");
+    }
+    else if (error_code == -2)
+    {
+        title = _("No Matching Game Found");
+        details = _("No matching game was found in the databases. If you are using a non-official "
+            "translation or modified copy, you may be able to find and manually enter the codes.");
+    }
+
+    auto dialog = Gtk::MessageDialog(*window.get(), title, true);
+    dialog.set_secondary_text(details, true);
     dialog.run();
     dialog.hide();
 }

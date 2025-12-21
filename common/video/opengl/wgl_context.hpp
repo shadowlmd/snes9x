@@ -4,18 +4,16 @@
    For further information, consult the LICENSE file in the root directory.
 \*****************************************************************************/
 
-#ifndef __WGL_CONTEXT_HPP
-#define __WGL_CONTEXT_HPP
+#pragma once
+#include <glad/wgl.h>
 
 #include "opengl_context.hpp"
-
-#include <glad/wgl.h>
 
 class WGLContext : public OpenGLContext
 {
   public:
     WGLContext();
-    ~WGLContext();
+    ~WGLContext() override;
     bool attach(HWND xid);
     bool create_context() override;
     void resize() override;
@@ -32,5 +30,3 @@ class WGLContext : public OpenGLContext
     int version_major;
     int version_minor;
 };
-
-#endif

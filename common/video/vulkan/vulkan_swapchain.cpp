@@ -1,29 +1,30 @@
 #include "vulkan_swapchain.hpp"
+#include "vulkan_context.hpp"
 
 namespace Vulkan
 {
 
-Swapchain::Swapchain(vk::Device device_, vk::PhysicalDevice physical_device_, vk::Queue queue_, vk::SurfaceKHR surface_, vk::CommandPool command_pool_)
-    : surface(surface_),
-      command_pool(command_pool_),
-      physical_device(physical_device_),
-      queue(queue_)
-{
-    device = device_;
-    create_render_pass();
-    end_render_pass_function = nullptr;
-}
-
-Swapchain::~Swapchain()
+Swapchain::Swapchain(Context &context_)
+    : context(context_),
+      device(context.device),
+      queue(context.queue),
+      physical_device(context.physical_device),
+      command_pool(context.command_pool.get()),
+      surface(context.surface.get())
 {
 }
 
 void Swapchain::set_vsync(bool new_setting)
 {
-    vsync = new_setting;
+    if (vsync != new_setting)
+    {
+        vsync = new_setting;
+        if (swapchain_object)
+            recreate();
+    }
 }
 
-void Swapchain::on_render_pass_end(std::function<void ()> function)
+void Swapchain::on_render_pass_end(const std::function<void()> &function)
 {
     end_render_pass_function = function;
 }
@@ -44,7 +45,7 @@ void Swapchain::create_render_pass()
         .setAttachment(0)
         .setLayout(vk::ImageLayout::eColorAttachmentOptimal);
 
-    std::array<vk::SubpassDependency, 2> subpass_dependency{};
+    std::array<vk::SubpassDependency, 1> subpass_dependency{};
     subpass_dependency[0]
         .setSrcSubpass(VK_SUBPASS_EXTERNAL)
         .setDstSubpass(0)
@@ -52,14 +53,6 @@ void Swapchain::create_render_pass()
         .setSrcAccessMask(vk::AccessFlagBits(0))
         .setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
         .setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite);
-    subpass_dependency[1]
-        .setSrcSubpass(VK_SUBPASS_EXTERNAL)
-        .setDstSubpass(0)
-        .setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
-        .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
-        .setDstStageMask(vk::PipelineStageFlagBits::eFragmentShader)
-        .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
-
 
     auto subpass_description = vk::SubpassDescription{}
         .setColorAttachments(attachment_reference)
@@ -73,15 +66,14 @@ void Swapchain::create_render_pass()
     render_pass = device.createRenderPassUnique(render_pass_create_info).value;
 }
 
-bool Swapchain::recreate(int new_width, int new_height)
+bool Swapchain::recreate()
 {
     if (swapchain_object)
     {
         device.waitIdle();
-        wait_on_frames();
     }
 
-    return create(num_swapchain_images, new_width, new_height);
+    return create();
 }
 
 vk::Image Swapchain::get_image()
@@ -89,21 +81,16 @@ vk::Image Swapchain::get_image()
     return image_data[current_swapchain_image].image;
 }
 
-template<typename T>
-static bool vector_find(std::vector<T> haystack, T&& needle)
-{
-    for (auto &elem : haystack)
-        if (elem == needle)
-            return true;
-    return false;
-}
-
 vk::PresentModeKHR Swapchain::get_present_mode() {
     auto present_mode = vk::PresentModeKHR::eFifo;
 
-    if (!vsync) {
+    if (context.platform_name == "wayland")
+    {
         if (supports_mailbox)
             present_mode = vk::PresentModeKHR::eMailbox;
+    }
+
+    if (!vsync) {
         if (supports_immediate)
             present_mode = vk::PresentModeKHR::eImmediate;
     }
@@ -113,11 +100,9 @@ vk::PresentModeKHR Swapchain::get_present_mode() {
 
 bool Swapchain::check_and_resize(int width, int height)
 {
-    vk::SurfaceCapabilitiesKHR surface_capabilities;
-
     if (width == -1 && height == -1)
     {
-        surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface).value;
+        vk::SurfaceCapabilitiesKHR surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface).value;
         width = surface_capabilities.currentExtent.width;
         height = surface_capabilities.currentExtent.height;
     }
@@ -127,24 +112,44 @@ bool Swapchain::check_and_resize(int width, int height)
 
     if (extents.width != (uint32_t)width || extents.height != (uint32_t)height)
     {
-        recreate(width, height);
+        set_desired_size(width, height);
+        recreate();
         return true;
     }
 
     return false;
 }
 
-bool Swapchain::create(unsigned int desired_num_swapchain_images, int new_width, int new_height)
+bool Swapchain::uncreate()
 {
     frames.clear();
     image_data.clear();
+    swapchain_object.reset();
+
+    return true;
+}
+
+bool Swapchain::create()
+{
+    if (!render_pass)
+        create_render_pass();
+
+    frames.clear();
+    image_data.clear();
+
+    auto present_modes = physical_device.getSurfacePresentModesKHR(surface).value;
+    for (auto &mode : present_modes)
+    {
+        if (mode == vk::PresentModeKHR::eMailbox)
+            supports_mailbox = true;
+    }
 
     auto surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface).value;
 
-    if (surface_capabilities.minImageCount > desired_num_swapchain_images)
+    if (desired_latency == - 1 || (int)surface_capabilities.minImageCount > desired_latency)
         num_swapchain_images = surface_capabilities.minImageCount;
     else
-        num_swapchain_images = desired_num_swapchain_images;
+        num_swapchain_images = desired_latency;
 
     // If extents aren't reported (Wayland), we have to rely on Wayland to report
     // the size, so keep current extent.
@@ -162,36 +167,27 @@ bool Swapchain::create(unsigned int desired_num_swapchain_images, int new_width,
         }
     }
 
-    if (new_width > 0 && new_height > 0)
+    if (desired_width > 0 && desired_height > 0)
     {
         // No buffer is allocated for surface yet
-        extents.width = new_width;
-        extents.height = new_height;
+        extents.width = desired_width;
+        extents.height = desired_height;
     }
-    else if (extents.width < 1 || extents.height < 1)
+
+    extents.width = std::clamp(extents.width,
+                               surface_capabilities.minImageExtent.width,
+                               surface_capabilities.maxImageExtent.width);
+    extents.height = std::clamp(extents.height,
+                                surface_capabilities.minImageExtent.height,
+                                surface_capabilities.maxImageExtent.height);
+
+    if (extents.width < 1 || extents.height < 1)
     {
         // Surface is likely hidden
         printf("Extents too small.\n");
         swapchain_object.reset();
         return false;
     }
-
-    if (extents.width > surface_capabilities.maxImageExtent.width)
-        extents.width = surface_capabilities.maxImageExtent.width;
-    if (extents.height > surface_capabilities.maxImageExtent.height)
-        extents.height = surface_capabilities.maxImageExtent.height;
-    if (extents.width < surface_capabilities.minImageExtent.width)
-        extents.width = surface_capabilities.minImageExtent.width;
-    if (extents.height < surface_capabilities.minImageExtent.height)
-        extents.height = surface_capabilities.minImageExtent.height;
-
-    auto present_modes = physical_device.getSurfacePresentModesKHR(surface).value;
-    supports_mailbox = vector_find(present_modes, vk::PresentModeKHR::eMailbox);
-    supports_immediate = vector_find(present_modes, vk::PresentModeKHR::eImmediate);
-    supports_relaxed = vector_find(present_modes, vk::PresentModeKHR::eFifoRelaxed);
-
-    auto swapchain_maintenance_info = vk::SwapchainPresentModesCreateInfoEXT{}
-        .setPresentModes(present_modes);
 
     auto swapchain_create_info = vk::SwapchainCreateInfoKHR{}
         .setMinImageCount(num_swapchain_images)
@@ -206,8 +202,7 @@ bool Swapchain::create(unsigned int desired_num_swapchain_images, int new_width,
         .setSurface(surface)
         .setPreTransform(vk::SurfaceTransformFlagBitsKHR::eIdentity)
         .setImageArrayLayers(1)
-        .setQueueFamilyIndices(graphics_queue_index)
-        .setPNext(&swapchain_maintenance_info);
+        .setQueueFamilyIndices(graphics_queue_index);
 
     swapchain_object.reset();
     auto resval = device.createSwapchainKHRUnique(swapchain_create_info);
@@ -267,8 +262,6 @@ bool Swapchain::create_resources()
             .setLayers(1)
             .setRenderPass(render_pass.get());
         image.framebuffer = device.createFramebufferUnique(framebuffer_create_info).value;
-
-        image.fence = device.createFenceUnique(fence_create_info).value;
     }
 
     current_swapchain_image = 0;
@@ -295,7 +288,7 @@ bool Swapchain::begin_frame()
     }
 
     vk::ResultValue<uint32_t> result_value(vk::Result::eSuccess, 0);
-    result_value = device.acquireNextImageKHR(swapchain_object.get(), UINT64_MAX, frame.acquire.get());
+    result_value = device.acquireNextImageKHR(swapchain_object.get(), 33333333, frame.acquire.get());
 
     if (result_value.result == vk::Result::eErrorOutOfDateKHR ||
         result_value.result == vk::Result::eSuboptimalKHR)
@@ -348,15 +341,13 @@ bool Swapchain::swap()
         .setSwapchains(swapchain_object.get())
         .setImageIndices(current_swapchain_image);
 
-    vk::SwapchainPresentModeInfoEXT present_mode_info;
-    auto present_mode = get_present_mode();
-    present_mode_info.setPresentModes(present_mode);
-    present_info.setPNext(&present_mode_info);
-
-    auto &present_fence = image_data[current_swapchain_image].fence.get();
-    device.resetFences(present_fence);
-    vk::SwapchainPresentFenceInfoEXT present_fence_info(present_fence);
-    present_mode_info.setPNext(&present_fence_info);
+    vk::PresentIdKHR present_id;
+    if (context.have_present_wait)
+    {
+        presentation_id++;
+        present_id.setPresentIds(presentation_id);
+        present_info.setPNext(&present_id);
+    }
 
     vk::Result result = queue.presentKHR(present_info);
     if (result == vk::Result::eErrorOutOfDateKHR)
@@ -414,18 +405,6 @@ void Swapchain::end_render_pass()
     get_cmd().endRenderPass();
 }
 
-bool Swapchain::wait_on_frame(int frame_num)
-{
-    auto result = device.waitForFences({ image_data[frame_num].fence.get() }, true, 33000000);
-    return (result == vk::Result::eSuccess);
-}
-
-void Swapchain::wait_on_frames()
-{
-    for (auto i = 0; i < image_data.size(); i++)
-        wait_on_frame(i);
-}
-
 vk::Extent2D Swapchain::get_extents()
 {
     return extents;
@@ -434,6 +413,14 @@ vk::Extent2D Swapchain::get_extents()
 vk::RenderPass &Swapchain::get_render_pass()
 {
     return render_pass.get();
+}
+
+void Swapchain::present_wait()
+{
+    if (context.have_present_wait && context.platform_name != "wayland")
+    {
+        device.waitForPresentKHR(swapchain_object.get(), presentation_id, 16666666);
+    }
 }
 
 } // namespace Vulkan

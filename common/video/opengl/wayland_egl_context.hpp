@@ -4,9 +4,7 @@
    For further information, consult the LICENSE file in the root directory.
 \*****************************************************************************/
 
-#ifndef __WAYLAND_EGL_CONTEXT_H
-#define __WAYLAND_EGL_CONTEXT_H
-
+#pragma once
 #include "opengl_context.hpp"
 #include "common/video/wayland/wayland_surface.hpp"
 
@@ -18,15 +16,17 @@ class WaylandEGLContext : public OpenGLContext
 {
   public:
     WaylandEGLContext();
-    ~WaylandEGLContext();
+    ~WaylandEGLContext() override;
     bool attach(wl_display *display, wl_surface *surface, WaylandSurface::Metrics m);
-    bool create_context();
-    void resize() {};
+    bool create_context() override;
+    void resize() override {};
     void resize(WaylandSurface::Metrics m);
-    void swap_buffers();
-    void swap_interval(int frames);
-    void make_current();
-    bool ready();
+    void swap_buffers() override;
+    void swap_interval(int frames) override;
+    void make_current() override;
+    void shrink();
+    void regrow();
+    bool ready() override;
 
     EGLDisplay egl_display;
     EGLSurface egl_surface;
@@ -37,5 +37,3 @@ class WaylandEGLContext : public OpenGLContext
 
     std::unique_ptr<WaylandSurface> wayland_surface;
 };
-
-#endif

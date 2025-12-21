@@ -1,9 +1,8 @@
 #include "ControllerPanel.hpp"
+#include "SDL3/SDL_gamepad.h"
 #include "SDLInputManager.hpp"
 #include "EmuApplication.hpp"
 #include "EmuConfig.hpp"
-#include "SDL_gamecontroller.h"
-#include <optional>
 #include <QtEvents>
 #include <QTimer>
 
@@ -19,16 +18,16 @@ ControllerPanel::ControllerPanel(EmuApplication *app_)
 
     BindingPanel::setTableWidget(tableWidget_controller,
                                  app->config->binding.controller[0].buttons,
-                                 app->config->allowed_bindings,
-                                 app->config->num_controller_bindings);
+                                 EmuConfig::allowed_bindings,
+                                 EmuConfig::num_controller_bindings);
 
     auto action = edit_menu.addAction(QObject::tr("Clear Current Controller"));
-    action->connect(action, &QAction::triggered, [&](bool checked) {
+    connect(action, &QAction::triggered, [&](bool checked) {
         clearCurrentController();
     });
 
     action = edit_menu.addAction(QObject::tr("Clear All Controllers"));
-    action->connect(action, &QAction::triggered, [&](bool checked) {
+    connect(action, &QAction::triggered, [&](bool checked) {
         clearAllControllers();
     });
 
@@ -36,7 +35,7 @@ ControllerPanel::ControllerPanel(EmuApplication *app_)
     for (auto i = 0; i < 5; i++)
     {
         action = swap_menu->addAction(QObject::tr("Controller %1").arg(i + 1));
-        action->connect(action, &QAction::triggered, [&, i](bool) {
+        connect(action, &QAction::triggered, [&, i](bool) {
             auto current_index = controllerComboBox->currentIndex();
             if (current_index == i)
                 return;
@@ -58,6 +57,11 @@ ControllerPanel::ControllerPanel(EmuApplication *app_)
     recreateAutoAssignMenu();
     onJoypadsChanged([&]{ recreateAutoAssignMenu(); });
 
+    connect(automapGamepadsCheckbox, &QCheckBox::toggled, [&](bool checked) {
+       this->app->config->automap_gamepads = checked;
+        app->updateBindings();
+    });
+
     connect(portComboBox, &QComboBox::currentIndexChanged, [&](int index) {
         this->app->config->port_configuration = index;
         app->updateBindings();
@@ -69,18 +73,18 @@ void ControllerPanel::recreateAutoAssignMenu()
     auto_assign_menu.clear();
     auto controller_list = app->input_manager->getXInputControllers();
 
-    for (int i = 0; i < app->config->allowed_bindings; i++)
+    for (int i = 0; i < EmuConfig::allowed_bindings; i++)
     {
         auto slot_menu = auto_assign_menu.addMenu(tr("Binding Set #%1").arg(i + 1));
         auto default_keyboard = slot_menu->addAction(tr("Default Keyboard"));
-        default_keyboard->connect(default_keyboard, &QAction::triggered, [&, slot = i](bool) {
+        connect(default_keyboard, &QAction::triggered, [&, slot = i](bool) {
             autoPopulateWithKeyboard(slot);
         });
 
-        for (auto c : controller_list)
+        for (const auto& c : controller_list)
         {
             auto controller_item = slot_menu->addAction(c.second.c_str());
-            controller_item->connect(controller_item, &QAction::triggered, [&, id = c.first, slot = i](bool) {
+            connect(controller_item, &QAction::triggered, [&, id = c.first, slot = i](bool) {
                 autoPopulateWithJoystick(id, slot);
             });
         }
@@ -95,7 +99,7 @@ void ControllerPanel::autoPopulateWithKeyboard(int slot)
     const char *button_list[] = { "Up", "Down", "Left", "Right", "d", "c", "s", "x", "z", "a", "Return", "Space" };
 
     for (int i = 0; i < std::size(button_list); i++)
-        buttons[app->config->allowed_bindings * i + slot] = EmuBinding::keyboard(QKeySequence::fromString(button_list[i])[0].key());
+        buttons[EmuConfig::allowed_bindings * i + slot] = EmuBinding::keyboard(QKeySequence::fromString(button_list[i])[0].key());
 
     fillTable();
     app->updateBindings();
@@ -104,31 +108,38 @@ void ControllerPanel::autoPopulateWithKeyboard(int slot)
 void ControllerPanel::autoPopulateWithJoystick(int joystick_id, int slot)
 {
     auto &device = app->input_manager->devices[joystick_id];
-    auto sdl_controller = device.controller;
+    auto sdl_controller = device.gamepad;
     auto &buttons = app->config->binding.controller[controllerComboBox->currentIndex()].buttons;
-    const SDL_GameControllerButton list[] = { SDL_CONTROLLER_BUTTON_DPAD_UP,
-                                              SDL_CONTROLLER_BUTTON_DPAD_DOWN,
-                                              SDL_CONTROLLER_BUTTON_DPAD_LEFT,
-                                              SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
-                                              // B, A and X, Y are inverted on XInput vs SNES
-                                              SDL_CONTROLLER_BUTTON_B,
-                                              SDL_CONTROLLER_BUTTON_A,
-                                              SDL_CONTROLLER_BUTTON_Y,
-                                              SDL_CONTROLLER_BUTTON_X,
-                                              SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
-                                              SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
-                                              SDL_CONTROLLER_BUTTON_START,
-                                              SDL_CONTROLLER_BUTTON_BACK };
+    const SDL_GamepadButton list[] = { SDL_GAMEPAD_BUTTON_DPAD_UP,
+                                       SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+                                       SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+                                       SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+                                       // B, A and X, Y are inverted on XInput vs SNES
+                                       SDL_GAMEPAD_BUTTON_EAST,
+                                       SDL_GAMEPAD_BUTTON_SOUTH,
+                                       SDL_GAMEPAD_BUTTON_NORTH,
+                                       SDL_GAMEPAD_BUTTON_WEST,
+                                       SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+                                       SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+                                       SDL_GAMEPAD_BUTTON_START,
+                                       SDL_GAMEPAD_BUTTON_BACK };
+
+    auto bindings = SDLInputManager::getXInputButtonBindings(sdl_controller);
+
     for (auto i = 0; i < std::size(list); i++)
     {
-        auto sdl_binding = SDL_GameControllerGetBindForButton(sdl_controller, list[i]);
-        if (SDL_CONTROLLER_BINDTYPE_BUTTON == sdl_binding.bindType)
-            buttons[4 * i + slot] = EmuBinding::joystick_button(device.index, sdl_binding.value.button);
-        else if (SDL_CONTROLLER_BINDTYPE_HAT == sdl_binding.bindType)
-            buttons[4 * i + slot] = EmuBinding::joystick_hat(device.index, sdl_binding.value.hat.hat, sdl_binding.value.hat.hat_mask);
-        else if (SDL_CONTROLLER_BINDTYPE_AXIS == sdl_binding.bindType)
-            buttons[4 * i + slot] = EmuBinding::joystick_axis(device.index, sdl_binding.value.axis, sdl_binding.value.axis);
+        if (!bindings.contains({ SDL_GAMEPAD_BINDTYPE_BUTTON, list[i] }))
+            continue;
+
+        auto &sdl_binding = bindings[{SDL_GAMEPAD_BINDTYPE_BUTTON, list[i]}];
+        if (SDL_GAMEPAD_BINDTYPE_BUTTON == sdl_binding.input_type)
+            buttons[4 * i + slot] = EmuBinding::joystick_button(device.index, sdl_binding.input.button);
+        else if (SDL_GAMEPAD_BINDTYPE_HAT == sdl_binding.input_type)
+            buttons[4 * i + slot] = EmuBinding::joystick_hat(device.index, sdl_binding.input.hat.hat, sdl_binding.input.hat.hat_mask);
+        else if (SDL_GAMEPAD_BINDTYPE_AXIS == sdl_binding.input_type)
+            buttons[4 * i + slot] = EmuBinding::joystick_axis(device.index, sdl_binding.input.axis.axis, sdl_binding.input.axis.axis);
     }
+
     fillTable();
     app->updateBindings();
 }
@@ -172,9 +183,5 @@ void ControllerPanel::showEvent(QShowEvent *event)
     BindingPanel::showEvent(event);
     recreateAutoAssignMenu();
     portComboBox->setCurrentIndex(app->config->port_configuration);
+    automapGamepadsCheckbox->setChecked(app->config->automap_gamepads);
 }
-
-ControllerPanel::~ControllerPanel()
-{
-}
-

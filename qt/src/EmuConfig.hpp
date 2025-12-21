@@ -1,6 +1,4 @@
-#ifndef __EMU_CONFIG_HPP
-#define __EMU_CONFIG_HPP
-
+#pragma once
 #include <string>
 #include <vector>
 
@@ -11,12 +9,12 @@ struct EmuConfig
     static std::string findConfigFile();
     static std::string findConfigDir();
     bool setDefaults(int section = -1);
-    void config(std::string filename, bool write);
-    void loadFile(std::string filename)
+    void config(const std::string &filename, bool write);
+    void loadFile(const std::string &filename)
     {
         config(filename, false);
     }
-    void saveFile(std::string filename)
+    void saveFile(const std::string &filename)
     {
         config(filename, true);
     }
@@ -171,6 +169,8 @@ struct EmuConfig
     static const int num_controller_bindings = 18;
     static const int num_shortcuts = 55;
 
+    bool automap_gamepads;
+
     struct
     {
         struct
@@ -180,6 +180,13 @@ struct EmuConfig
 
         EmuBinding shortcuts[num_shortcuts * allowed_bindings];
     } binding;
+
+    struct controller_t
+    {
+        EmuBinding buttons[num_controller_bindings];
+    };
+    std::vector<controller_t> additional_controllers;
+
 
     static const char **getDefaultShortcutKeys();
     static const char **getShortcutNames();
@@ -243,5 +250,3 @@ struct EmuConfig
         eSeekToFrame,
     };
 };
-
-#endif

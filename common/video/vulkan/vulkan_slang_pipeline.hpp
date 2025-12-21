@@ -10,7 +10,7 @@ namespace Vulkan
 class SlangPipeline
 {
   public:
-    SlangPipeline();
+    SlangPipeline() = default;
     void init(Context *context_, SlangShader *shader_);
     ~SlangPipeline();
 
@@ -46,6 +46,6 @@ class SlangPipeline
     int destination_height;
 };
 
-vk::SamplerAddressMode wrap_mode_from_string(std::string s);
+vk::SamplerAddressMode wrap_mode_from_string(const std::string &mode_string);
 
 } // namespace Vulkan

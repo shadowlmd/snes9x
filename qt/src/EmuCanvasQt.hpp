@@ -1,6 +1,4 @@
-#ifndef __EMU_CANVAS_QT_HPP
-#define __EMU_CANVAS_QT_HPP
-
+#pragma once
 #include "EmuCanvas.hpp"
 
 #include <QPainter>
@@ -9,11 +7,10 @@
 class EmuCanvasQt : public EmuCanvas
 {
   public:
-    EmuCanvasQt(EmuConfig *config, QWidget *parent, QWidget *main_window);
-    ~EmuCanvasQt();
+    EmuCanvasQt(EmuConfig *config, QWidget *main_window);
 
-    virtual void deinit() override;
-    virtual void draw() override;
+    void deinit() override;
+    void draw() override;
 
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -21,5 +18,3 @@ class EmuCanvasQt : public EmuCanvas
     std::mutex qimage_mutex;
     QImage qimage;
 };
-
-#endif

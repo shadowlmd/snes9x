@@ -1,7 +1,5 @@
 #include "EmuCanvasOpenGL.hpp"
 #include <QtGui/QGuiApplication>
-#include <qpa/qplatformnativeinterface.h>
-#include <QTimer>
 #include <QMessageBox>
 #include "common/video/opengl/opengl_context.hpp"
 
@@ -17,7 +15,7 @@ using namespace QNativeInterface;
 #include "EmuMainWindow.hpp"
 #include "snes9x_imgui.h"
 #include "imgui_impl_opengl3.h"
-#include <locale.h>
+#include <clocale>
 
 static const char *stock_vertex_shader_140 = R"(
 #version 140
@@ -46,22 +44,25 @@ void main()
 }
 )";
 
-EmuCanvasOpenGL::EmuCanvasOpenGL(EmuConfig *config, QWidget *parent, QWidget *main_window)
-    : EmuCanvas(config, parent, main_window)
+EmuCanvasOpenGL::EmuCanvasOpenGL(EmuConfig *config, QWidget *main_window)
+    : EmuCanvas(config, main_window)
 {
     setMinimumSize(256 / devicePixelRatioF(), 224 / devicePixelRatioF());
     setUpdatesEnabled(false);
     setAutoFillBackground(false);
+
+    if (QGuiApplication::platformName() == "wayland")
+    {
+        main_window->createWinId();
+        return;
+    }
+
     setAttribute(Qt::WA_NoSystemBackground, true);
     setAttribute(Qt::WA_NativeWindow, true);
     setAttribute(Qt::WA_PaintOnScreen, true);
     setAttribute(Qt::WA_OpaquePaintEvent);
 
     createWinId();
-}
-
-EmuCanvasOpenGL::~EmuCanvasOpenGL()
-{
 }
 
 void EmuCanvasOpenGL::createStockShaders()
@@ -71,8 +72,8 @@ void EmuCanvasOpenGL::createStockShaders()
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
     GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
-    glShaderSource(vertex_shader, 1, &stock_vertex_shader_140, NULL);
-    glShaderSource(fragment_shader, 1, &stock_fragment_shader_140, NULL);
+    glShaderSource(vertex_shader, 1, &stock_vertex_shader_140, nullptr);
+    glShaderSource(fragment_shader, 1, &stock_fragment_shader_140, nullptr);
 
     glCompileShader(vertex_shader);
     glAttachShader(stock_program, vertex_shader);
@@ -128,17 +129,18 @@ bool EmuCanvasOpenGL::createContext()
         return true;
 
     auto platform = QGuiApplication::platformName();
-    auto pni = QGuiApplication::platformNativeInterface();
+    auto app = reinterpret_cast<QGuiApplication *>(QGuiApplication::instance());
     QGuiApplication::sync();
 #ifndef _WIN32
     if (platform == "wayland")
     {
-        auto display = (wl_display *)pni->nativeResourceForWindow("display", windowHandle());
-        auto surface = (wl_surface *)pni->nativeResourceForWindow("surface", main_window->windowHandle());
+        auto iface = app->nativeInterface<QNativeInterface::QWaylandApplication>();
+        auto display = iface->display();
+        auto surface = (wl_surface *)main_window->winId();
         auto wayland_egl_context = new WaylandEGLContext();
         int s = devicePixelRatio();
 
-        if (!wayland_egl_context->attach(display, surface, { parent->x() - main_window->x(), parent->y() - main_window->y(), parent->width(), parent->height(), s }))
+        if (!wayland_egl_context->attach(display, surface, { x() - main_window->x(), y() - main_window->y(), width(), height(), s }))
         {
             printf("Couldn't attach context to wayland surface.\n");
             context.reset();
@@ -149,7 +151,8 @@ bool EmuCanvasOpenGL::createContext()
     }
     else if (platform == "xcb")
     {
-        auto display = (Display *)pni->nativeResourceForWindow("display", windowHandle());
+        auto iface = app->nativeInterface<QNativeInterface::QX11Application>();
+        auto display = iface->display();
         auto xid = (Window)winId();
 
         auto glx_context = new GTKGLXContext();
@@ -209,7 +212,7 @@ bool EmuCanvasOpenGL::createContext()
 
 void EmuCanvasOpenGL::loadShaders()
 {
-    auto endswith = [&](std::string ext) ->bool {
+    auto endswith = [&](const std::string &ext) ->bool {
         return config->shader.rfind(ext) == config->shader.length() - ext.length();
     };
     using_shader = true;
@@ -290,8 +293,7 @@ void EmuCanvasOpenGL::draw()
         }
     }
 
-    if (config->speed_sync_method == EmuConfig::eTimer || config->speed_sync_method == EmuConfig::eTimerWithFrameskip)
-        throttle();
+    throttle();
 
     context->swap_buffers();
 
@@ -306,12 +308,11 @@ void EmuCanvasOpenGL::resizeEvent(QResizeEvent *event)
     if (!context)
         return;
 
-    auto g = parent->geometry();
     int s = devicePixelRatio();
     auto platform = QGuiApplication::platformName();
 #ifndef _WIN32
     if (QGuiApplication::platformName() == "wayland")
-        ((WaylandEGLContext *)context.get())->resize({ g.x() - main_window->x(), g.y() - main_window->y(), g.width(), g.height(), s });
+        ((WaylandEGLContext *)context.get())->resize({ x() - main_window->x(), y() - main_window->y(), width(), height(), s });
     else if (platform == "xcb")
         ((GTKGLXContext *)context.get())->resize();
 #else
@@ -327,7 +328,7 @@ void EmuCanvasOpenGL::paintEvent(QPaintEvent *event)
 
     if (output_data.ready)
     {
-        if (!static_cast<EmuMainWindow *>(main_window)->isActivelyDrawing())
+        if (!dynamic_cast<EmuMainWindow *>(main_window)->isActivelyDrawing())
             draw();
         return;
     }

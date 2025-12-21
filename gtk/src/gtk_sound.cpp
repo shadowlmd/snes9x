@@ -4,7 +4,6 @@
    For further information, consult the LICENSE file in the root directory.
 \*****************************************************************************/
 
-#include <errno.h>
 #include <unistd.h>
 
 #include "gtk_s9x.h"
@@ -33,26 +32,6 @@ static int playback_rates[8] =
 };
 
 static S9xSoundDriver *driver;
-
-int S9xSoundBase2log(int num)
-{
-    int power;
-
-    if (num < 1)
-        return 0;
-
-    for (power = 0; num > 1; power++)
-    {
-        num >>= 1;
-    }
-
-    return power;
-}
-
-int S9xSoundPowerof2(int num)
-{
-    return (1 << num);
-}
 
 std::vector<std::string> S9xGetSoundDriverNames()
 {
@@ -105,7 +84,7 @@ void S9xPortSoundInit()
     if (name == "SDL")
         driver = new S9xSDLSoundDriver();
 
-    if (driver != NULL)
+    if (driver != nullptr)
     {
         driver->init();
 
@@ -115,7 +94,7 @@ void S9xPortSoundInit()
             if (Settings.SoundInputRate == 0.0)
             {
                 Settings.SoundInputRate = 31950;
-                gui_config->auto_input_rate = 0;
+                gui_config->auto_input_rate = false;
             }
         }
         else

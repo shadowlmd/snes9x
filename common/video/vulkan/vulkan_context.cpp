@@ -1,15 +1,17 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <optional>
 #include "vulkan_context.hpp"
 
 namespace Vulkan
 {
 
-static std::unique_ptr<vk::DynamicLoader> dl;
+static std::unique_ptr<vk::detail::DynamicLoader> dl;
 
 Context::Context()
 {
+    swapchain = std::make_unique<Swapchain>(*this);
 }
 
 Context::~Context()
@@ -20,7 +22,6 @@ Context::~Context()
     wait_idle();
     swapchain.reset();
     command_pool.reset();
-    descriptor_pool.reset();
     allocator.destroy();
     surface.reset();
     wait_idle();
@@ -32,7 +33,7 @@ static bool load_loader()
     if (dl)
         return true;
 
-    dl = std::make_unique<vk::DynamicLoader>();
+    dl = std::make_unique<vk::detail::DynamicLoader>();
     if (!dl->success())
     {
         dl.reset();
@@ -93,45 +94,63 @@ std::vector<std::string> Vulkan::Context::get_device_list()
 }
 
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-bool Context::init_win32(HINSTANCE hinstance, HWND hwnd, int preferred_device)
+bool Context::init_win32()
 {
     instance = create_instance_preamble(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
     if (!instance)
         return false;
 
+    return init();
+}
+
+bool Context::create_win32_surface(HINSTANCE hinstance, HWND hwnd)
+{
     auto win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR{}
         .setHinstance(hinstance)
         .setHwnd(hwnd);
-    surface = instance->createWin32SurfaceKHRUnique(win32_surface_create_info).value;
-    if (!surface)
+    auto retval = instance->createWin32SurfaceKHRUnique(win32_surface_create_info);
+    if (retval.result != vk::Result::eSuccess)
         return false;
-    return init(preferred_device);
+    surface = std::move(retval.value);
+    return true;
 }
 #endif
 
 #ifdef VK_USE_PLATFORM_XLIB_KHR
-bool Context::init_Xlib(Display *dpy, Window xid, int preferred_device)
+bool Context::init_Xlib()
 {
     instance = create_instance_preamble(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
     if (!instance)
         return false;
 
+    platform_name = "xlib";
+    return init();
+}
+
+bool Context::create_Xlib_surface(Display *dpy, Window xid)
+{
     auto retval = instance->createXlibSurfaceKHRUnique({ {}, dpy, xid });
     if (retval.result != vk::Result::eSuccess)
         return false;
     surface = std::move(retval.value);
 
-    return init(preferred_device);
+    return true;
 }
 #endif
 
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
-bool Context::init_wayland(wl_display *dpy, wl_surface *parent, int initial_width, int initial_height, int preferred_device)
+bool Context::init_wayland()
 {
     instance = create_instance_preamble(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
     if (!instance)
         return false;
 
+    platform_name = "wayland";
+    return init();
+}
+
+bool Context::create_wayland_surface(wl_display *dpy, wl_surface *parent)
+{
     auto wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR{}
         .setSurface(parent)
         .setDisplay(dpy);
@@ -141,35 +160,28 @@ bool Context::init_wayland(wl_display *dpy, wl_surface *parent, int initial_widt
         return false;
     surface = std::move(new_surface);
 
-    return init(preferred_device, initial_width, initial_height);
+    return true;
 }
 #endif
 
-bool Context::init(int preferred_device, int initial_width, int initial_height)
+bool Context::destroy_surface()
 {
-    init_device(preferred_device);
-    init_vma();
-    init_command_pool();
-    init_descriptor_pool();
-
-    create_swapchain(initial_width, initial_height);
     wait_idle();
+    if (swapchain)
+        swapchain->uncreate();
+
+    surface.reset();
+
     return true;
 }
 
-bool Context::init_descriptor_pool()
+bool Context::init()
 {
-    auto descriptor_pool_size = vk::DescriptorPoolSize{}
-        .setDescriptorCount(9)
-        .setType(vk::DescriptorType::eCombinedImageSampler);
-    auto descriptor_pool_create_info = vk::DescriptorPoolCreateInfo{}
-        .setPoolSizes(descriptor_pool_size)
-        .setMaxSets(20)
-        .setFlags(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet);
+    init_device();
+    init_vma();
+    init_command_pool();
 
-    auto retval = device.createDescriptorPoolUnique(descriptor_pool_create_info);
-    descriptor_pool = std::move(retval.value);
-
+    wait_idle();
     return true;
 }
 
@@ -192,7 +204,7 @@ static bool find_extension(std::vector<vk::ExtensionProperties> &props, const ch
                         }) != props.end();
 };
 
-static uint32_t find_graphics_queue(vk::PhysicalDevice &device)
+static std::optional<uint32_t> find_graphics_queue(vk::PhysicalDevice &device)
 {
     auto queue_props = device.getQueueFamilyProperties();
     for (size_t i = 0; i < queue_props.size(); i++)
@@ -203,7 +215,7 @@ static uint32_t find_graphics_queue(vk::PhysicalDevice &device)
         }
     }
 
-    return UINT32_MAX;
+    return std::nullopt;
 }
 
 static bool check_extensions(std::vector<const char *> &required_extensions, vk::PhysicalDevice &device)
@@ -217,55 +229,76 @@ static bool check_extensions(std::vector<const char *> &required_extensions, vk:
     return true;
 };
 
-bool Context::init_device(int preferred_device)
+bool Context::init_device()
 {
     std::vector<const char *> required_extensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     };
 
+    std::vector<const char *> present_wait_extensions =
+    {
+        VK_KHR_PRESENT_ID_EXTENSION_NAME,
+        VK_KHR_PRESENT_WAIT_EXTENSION_NAME
+    };
+
     auto device_list = instance->enumeratePhysicalDevices().value;
-    physical_device = nullptr;
+    bool device_chosen = false;
+    physical_device = vk::PhysicalDevice();
 
     if (preferred_device > -1 &&
         (size_t)preferred_device < device_list.size() &&
         check_extensions(required_extensions, device_list[preferred_device]))
     {
         physical_device = device_list[preferred_device];
+        device_chosen = true;
     }
 
-    if (physical_device == nullptr)
+    if (!device_chosen)
     {
         for (auto &device : device_list)
         {
             if (check_extensions(required_extensions, device))
             {
                 physical_device = device;
+                device_chosen = true;
                 break;
             }
         }
     }
 
-    auto extension_properties = physical_device.enumerateDeviceExtensionProperties().value;
-    physical_device.getProperties(&physical_device_props);
+    if (!device_chosen)
+        return false;
 
-    graphics_queue_family_index = find_graphics_queue(physical_device);
-    if (graphics_queue_family_index == UINT32_MAX)
+    if (check_extensions(present_wait_extensions, physical_device))
+    {
+        for (auto &ext : present_wait_extensions)
+            required_extensions.push_back(ext);
+        have_present_wait = true;
+    }
+    else
+    {
+        have_present_wait = false;
+    }
+
+    if (auto index = find_graphics_queue(physical_device))
+        graphics_queue_family_index = *index;
+    else
         return false;
 
     std::vector<float> priorities = { 1.0f };
     vk::DeviceQueueCreateInfo dqci({}, graphics_queue_family_index, priorities);
     vk::DeviceCreateInfo dci({}, dqci, {}, required_extensions);
 
+    vk::PhysicalDevicePresentWaitFeaturesKHR physical_device_present_wait_feature(true);
+    vk::PhysicalDevicePresentIdFeaturesKHR physical_device_present_id_feature(true);
+    if (have_present_wait)
+    {
+        dci.setPNext(&physical_device_present_wait_feature);
+        physical_device_present_wait_feature.setPNext(&physical_device_present_id_feature);
+    }
+
     device = physical_device.createDevice(dci).value;
     queue = device.getQueue(graphics_queue_family_index, 0);
-
-    auto surface_formats = physical_device.getSurfaceFormatsKHR(surface.get()).value;
-    if (std::find_if(surface_formats.begin(),
-                     surface_formats.end(),
-                     [](vk::SurfaceFormatKHR &f) {
-                         return (f.format == vk::Format::eB8G8R8A8Unorm);
-                     }) == surface_formats.end())
-        return false;
 
     return true;
 }
@@ -286,16 +319,15 @@ bool Context::init_vma()
     return true;
 }
 
-bool Context::create_swapchain(int width, int height)
+bool Context::create_swapchain()
 {
     wait_idle();
-    swapchain = std::make_unique<Swapchain>(device, physical_device, queue, surface.get(), command_pool.get());
-    return swapchain->create(2, width, height);
+    return swapchain->create();
 }
 
-bool Context::recreate_swapchain(int width, int height)
+bool Context::recreate_swapchain()
 {
-    return swapchain->recreate(width, height);
+    return swapchain->recreate();
 }
 
 void Context::wait_idle()

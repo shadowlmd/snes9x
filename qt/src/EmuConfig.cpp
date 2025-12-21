@@ -256,8 +256,8 @@ bool EmuConfig::setDefaults(int section)
         restart_set(playback_rate, 48000);
         restart_set(audio_buffer_size_ms, 64);
 
-        adjust_input_rate_automatically = true;
-        input_rate = 31979;
+        adjust_input_rate_automatically = false;
+        input_rate = 32040;
         dynamic_rate_control = false;
         dynamic_rate_limit = 0.005;
         mute_audio = false;
@@ -284,6 +284,7 @@ bool EmuConfig::setDefaults(int section)
 
     if (section == -1 || section == 4)
     {
+        automap_gamepads = true;
         // Controllers
         port_configuration = 0;
         memset(binding.controller, 0, sizeof(binding.controller));
@@ -324,7 +325,7 @@ bool EmuConfig::setDefaults(int section)
     return restart;
 }
 
-void EmuConfig::config(std::string filename, bool write)
+void EmuConfig::config(const std::string &filename, bool write)
 {
     QSettings settings(QString::fromStdString(filename), QSettings::IniFormat);
 
@@ -339,25 +340,26 @@ void EmuConfig::config(std::string filename, bool write)
 
     if (write)
     {
-        Bool = [&](std::string key, bool &value) {
+        Bool = [&](const std::string &key, bool &value) {
             settings.setValue(key, value);
         };
-        Int = [&](std::string key, int &value) {
+        Int = [&](const std::string &key, int &value) {
             settings.setValue(key, value);
         };
-        String = [&](std::string key, std::string &value) {
+        String = [&](const std::string &key, std::string &value) {
             settings.setValue(key, QString::fromStdString(value));
         };
-        Enum = [&](std::string key, int &value, std::vector<const char *> map) {
+        Enum = [&](const std::string &key, int &value,
+                   const std::vector<const char *> &map) {
             settings.setValue(key, map[value]);
         };
-        Double = [&](std::string key, double &value) {
+        Double = [&](const std::string &key, double &value) {
             settings.setValue(key, value);
         };
-        Binding = [&](std::string key, EmuBinding &binding) {
+        Binding = [&](const std::string &key, EmuBinding &binding) {
             settings.setValue(key, QString::fromStdString(binding.to_config_string()));
         };
-        BeginSection = [&](std::string str) {
+        BeginSection = [&](const std::string &str) {
             settings.beginGroup(str);
         };
         EndSection = [&]() {
@@ -366,27 +368,28 @@ void EmuConfig::config(std::string filename, bool write)
     }
     else
     {
-        Bool = [&](std::string key, bool &value) {
+        Bool = [&](const std::string &key, bool &value) {
             if (settings.contains(key))
                 value = settings.value(key).toBool();
         };
-        Int = [&](std::string key, int &value) {
+        Int = [&](const std::string &key, int &value) {
             if (settings.contains(key))
                 value = settings.value(key).toInt();
         };
-        String = [&](std::string key, std::string &value) {
+        String = [&](const std::string &key, std::string &value) {
             if (settings.contains(key))
                 value = settings.value(key).toString().toStdString();
         };
-        Binding = [&](std::string key, EmuBinding &binding) {
+        Binding = [&](const std::string &key, EmuBinding &binding) {
             if (settings.contains(key))
                 binding = EmuBinding::from_config_string(settings.value(key).toString().toStdString());
         };
-        Double = [&](std::string key, double &value) {
+        Double = [&](const std::string &key, double &value) {
             if (settings.contains(key))
                 value = settings.value(key).toDouble();
         };
-        Enum = [&](std::string key, int &value, std::vector<const char *> map) {
+        Enum = [&](const std::string &key, int &value,
+                   const std::vector<const char *> &map) {
             QString entry;
 
             if (settings.contains(key))
@@ -403,7 +406,7 @@ void EmuConfig::config(std::string filename, bool write)
                 }
             }
         };
-        BeginSection = [&](std::string str) {
+        BeginSection = [&](const std::string &str) {
             settings.beginGroup(QString::fromStdString(str));
         };
         EndSection = [&]() {
@@ -495,10 +498,10 @@ void EmuConfig::config(std::string filename, bool write)
     EndSection();
 
     BeginSection("Ports");
+    Bool("AutomapGamepads", automap_gamepads);
     Enum("PortConfiguration", port_configuration, { "OneController", "TwoControllers", "Mouse", "SuperScope", "Multitap" });
     EndSection();
 
-    const char *names[] = { "Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Start", "Select", "Turbo_A", "Turbo_B", "Turbo_X", "Turbo_Y", "Turbo_L", "Turbo_R" };
     for (int c = 0; c < 5; c++)
     {
         BeginSection("Controller_" + std::to_string(c));
@@ -506,6 +509,11 @@ void EmuConfig::config(std::string filename, bool write)
         for (int y = 0; y < num_controller_bindings; y++)
             for (int x = 0; x < allowed_bindings; x++)
             {
+                const char *names[] = {"Up",      "Down",    "Left",    "Right",
+                                       "A",       "B",       "X",       "Y",
+                                       "L",       "R",       "Start",   "Select",
+                                       "Turbo_A", "Turbo_B", "Turbo_X", "Turbo_Y",
+                                       "Turbo_L", "Turbo_R"};
                 std::string keyname = names[y] + std::to_string(x);
                 Binding(keyname, binding.controller[c].buttons[y * allowed_bindings + x]);
             }

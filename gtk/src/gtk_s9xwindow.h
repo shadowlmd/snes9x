@@ -4,9 +4,7 @@
    For further information, consult the LICENSE file in the root directory.
 \*****************************************************************************/
 
-#ifndef __GTK_S9XWINDOW_H
-#define __GTK_S9XWINDOW_H
-
+#pragma once
 #include "gtk_compat.h"
 
 #include "port.h"
@@ -16,7 +14,7 @@
 class Snes9xWindow : public GtkBuilderWindow
 {
   public:
-    Snes9xWindow(Snes9xConfig *config);
+    explicit Snes9xWindow(Snes9xConfig *config);
 
     struct AcceleratorEntry
     {
@@ -38,7 +36,8 @@ class Snes9xWindow : public GtkBuilderWindow
     void enter_fullscreen_mode();
     void leave_fullscreen_mode();
     void toggle_fullscreen_mode();
-    void finish_fullscreen();
+    void set_bypass_compositor(bool bypass);
+    void set_custom_video_mode(bool enable);
 
     /* Cursor modifying functions */
     void show_mouse_cursor();
@@ -52,7 +51,7 @@ class Snes9xWindow : public GtkBuilderWindow
     void load_state_dialog();
     void configure_widgets();
     void save_spc_dialog();
-    bool try_open_rom(std::string filename);
+    bool try_open_rom(const std::string &filename);
     std::string open_movie_dialog(bool readonly);
     void movie_seek_dialog();
     void open_multicart_dialog();
@@ -88,7 +87,6 @@ class Snes9xWindow : public GtkBuilderWindow
     int last_width, last_height;
     int mouse_region_x, mouse_region_y;
     int mouse_region_width, mouse_region_height;
-    int nfs_width, nfs_height, nfs_x, nfs_y;
     int autovrr_saved_frameskip;
     int autovrr_saved_sound_input_rate;
     bool autovrr_saved_sync_to_vblank;
@@ -120,5 +118,3 @@ typedef struct gtk_splash_t
     unsigned int bytes_per_pixel; /* 2:RGB16, 3:RGB, 4:RGBA */
     unsigned char pixel_data[256 * 224 * 3 + 1];
 } gtk_splash_t;
-
-#endif /* __GTK_S9XWINDOW_H */

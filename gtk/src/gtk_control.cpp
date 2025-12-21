@@ -5,7 +5,6 @@
 \*****************************************************************************/
 
 #include <fcntl.h>
-#include <filesystem>
 
 #include "SDL_joystick.h"
 #include "fscompat.h"
@@ -111,7 +110,7 @@ const BindingLink b_links[] =
         { "b_rewind",              "GTK_rewind"        },
         { "b_grab_mouse",          "GTK_grab_mouse"    },
 
-        { NULL, NULL }
+        { nullptr, nullptr }
 };
 
 /* Where the page breaks occur in the preferences pane */
@@ -139,8 +138,28 @@ bool S9xPollAxis(uint32 id, int16 *value)
     return true;
 }
 
+static bool using_superscope()
+{
+    for (int i = 0; i < 2; i++)
+    {
+        enum controllers ctl;
+        int8_t id1, id2, id3, id4;
+        S9xGetController(i, &ctl, &id1, &id2, &id3, &id4);
+        if (ctl == CTL_SUPERSCOPE)
+            return true;
+    }
+
+    return false;
+}
+
 bool S9xPollPointer(uint32 id, int16 *x, int16 *y)
 {
+    if (using_superscope())
+    {
+        top_level->snes_mouse_x = std::clamp(top_level->snes_mouse_x, 0.0, 256.0);
+        top_level->snes_mouse_y = std::clamp(top_level->snes_mouse_y, 0.0, 239.0);
+    }
+
     *x = top_level->snes_mouse_x;
     *y = top_level->snes_mouse_y;
 
@@ -179,9 +198,7 @@ void S9xReleaseJoysticks()
 
 static void swap_controllers_1_2()
 {
-    JoypadBinding interrim;
-
-    interrim = gui_config->pad[0];
+    JoypadBinding interrim = gui_config->pad[0];
     gui_config->pad[0] = gui_config->pad[1];
     gui_config->pad[1] = interrim;
 
@@ -200,7 +217,7 @@ static void change_slot(int difference)
     char extension_string[5];
     snprintf(extension_string, 5, ".%03d", gui_config->current_save_slot);
     auto filename = S9xGetFilename(extension_string, SNAPSHOT_DIR);
-    struct stat info;
+    struct stat info{};
     std::string exists = "empty";
     if (stat(filename.c_str(), &info) == 0)
         exists = "used";
@@ -311,7 +328,7 @@ Binding S9xGetBindingByName(const char *name)
         }
     }
 
-    return Binding();
+    return {};
 }
 
 s9xcommand_t S9xGetPortCommandT(const char *name)
@@ -437,18 +454,16 @@ s9xcommand_t S9xGetPortCommandT(const char *name)
 
 void S9xProcessEvents(bool8 block)
 {
-    JoyEvent event;
-    Binding  binding;
-
     if (S9xGrabJoysticks())
     {
         gui_config->joysticks.poll_events();
         for (auto &j : gui_config->joysticks)
         {
+            JoyEvent event;
             while (j.second->get_event(&event))
             {
-                binding = Binding(j.second->joynum, event.parameter, 0);
-                S9xReportButton(binding.hex(), event.state == JOY_PRESSED ? 1 : 0);
+                Binding binding(j.second->joynum, event.parameter, 0);
+                S9xReportButton(binding.hex(), event.state == JOY_PRESSED);
                 gui_config->screensaver_needs_reset = true;
             }
         }
@@ -482,7 +497,7 @@ void S9xDeinitInputDevices()
 JoyDevice::JoyDevice()
 {
     enabled = false;
-    filedes = NULL;
+    filedes = nullptr;
     mode = JOY_MODE_INDIVIDUAL;
 }
 
@@ -754,7 +769,7 @@ void JoyDevices::clear()
 
 bool JoyDevices::add(int sdl_device_index)
 {
-    std::array<bool, NUM_JOYPADS> joynums;
+    std::array<bool, NUM_JOYPADS> joynums{};
     joynums.fill(false);
     for (auto &j : joysticks)
     {
@@ -762,8 +777,8 @@ bool JoyDevices::add(int sdl_device_index)
     }
 
     // New joystick always gets the lowest available joynum
-    int joynum(0);
-    for (; joynum < NUM_JOYPADS && joynums[joynum]; ++joynum);
+    int joynum = 0;
+    for (; joynum < NUM_JOYPADS && joynums[joynum]; ++joynum) {};
 
     if (joynum == NUM_JOYPADS)
     {
@@ -780,7 +795,7 @@ bool JoyDevices::add(int sdl_device_index)
 
 bool JoyDevices::remove(SDL_JoystickID instance_id)
 {
-    if (!joysticks.count(instance_id))
+    if (!joysticks.contains(instance_id))
     {
         printf("joystick_remove: invalid instance id %d", instance_id);
         return false;
@@ -792,11 +807,11 @@ bool JoyDevices::remove(SDL_JoystickID instance_id)
 
 JoyDevice *JoyDevices::get_joystick(SDL_JoystickID instance_id)
 {
-    if (joysticks.count(instance_id)){
+    if (joysticks.contains(instance_id)){
         return joysticks[instance_id].get();
     }
     printf("BUG: Event for unknown joystick instance id: %d", instance_id);
-    return NULL;
+    return nullptr;
 }
 
 void JoyDevices::register_centers()

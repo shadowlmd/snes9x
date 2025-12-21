@@ -2,7 +2,7 @@
 #include "EmuMainWindow.hpp"
 #include "SDLInputManager.hpp"
 #include "Snes9xController.hpp"
-#include "common/audio/s9x_sound_driver_sdl.hpp"
+#include "common/audio/s9x_sound_driver_sdl3.hpp"
 #include "common/audio/s9x_sound_driver_cubeb.hpp"
 #ifdef USE_PULSEAUDIO
 #include "common/audio/s9x_sound_driver_pulse.hpp"
@@ -42,7 +42,7 @@ void EmuApplication::restartAudio()
     if (!sound_driver)
     {
         config->sound_driver = "sdl";
-        sound_driver = std::make_unique<S9xSDLSoundDriver>();
+        sound_driver = std::make_unique<S9xSDL3SoundDriver>();
     }
 
     sound_driver->init();
@@ -240,7 +240,7 @@ void EmuApplication::startThread()
     }
 }
 
-bool EmuApplication::openFile(std::string filename)
+bool EmuApplication::openFile(const std::string &filename)
 {
     window->gameChanging();
     updateSettings();
@@ -315,12 +315,81 @@ void EmuApplication::updateBindings()
         }
     }
 
+    config->additional_controllers.clear();
+    if (config->automap_gamepads)
+    {
+        for (auto &[joystick_id, device] : input_manager->devices)
+        {
+            if (!device.is_gamepad)
+                continue;
+
+            const SDL_GamepadButton list[] = {
+                SDL_GAMEPAD_BUTTON_DPAD_UP,
+                SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+                SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+                SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+                // B, A and X, Y are inverted on XInput vs SNES
+                SDL_GAMEPAD_BUTTON_EAST,
+                SDL_GAMEPAD_BUTTON_SOUTH,
+                SDL_GAMEPAD_BUTTON_NORTH,
+                SDL_GAMEPAD_BUTTON_WEST,
+                SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+                SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+                SDL_GAMEPAD_BUTTON_START,
+                SDL_GAMEPAD_BUTTON_BACK
+            };
+
+            auto sdl_bindings = SDLInputManager::getXInputButtonBindings(device.gamepad);
+
+            EmuConfig::controller_t controller{};
+
+            for (int i = 0; i < std::size(list); i++)
+            {
+                if (!sdl_bindings.contains({ SDL_GAMEPAD_BINDTYPE_BUTTON, list[i] }))
+                    continue;
+
+                auto &sdl_binding = sdl_bindings[{ SDL_GAMEPAD_BINDTYPE_BUTTON, list[i] }];
+                if (SDL_GAMEPAD_BINDTYPE_BUTTON == sdl_binding.input_type)
+                    controller.buttons[i] = EmuBinding::joystick_button(device.index, sdl_binding.input.button);
+                else if (SDL_GAMEPAD_BINDTYPE_HAT == sdl_binding.input_type)
+                    controller.buttons[i] = EmuBinding::joystick_hat(device.index, sdl_binding.input.hat.hat, sdl_binding.input.hat.hat_mask);
+                else if (SDL_GAMEPAD_BINDTYPE_AXIS == sdl_binding.input_type)
+                    controller.buttons[i] = EmuBinding::joystick_axis(device.index, sdl_binding.input.axis.axis, sdl_binding.input.axis.axis);
+
+                if (controller.buttons[i].type != EmuBinding::None)
+                {
+                    bindings.insert({ controller.buttons[i].hash(), { "Snes9x", Core } });
+                }
+            }
+
+            // Check axes for sticks, using slots 12-15 in controller
+            auto do_axis = [&](int sdl_axis, int negative_slot, int positive_slot)
+            {
+                std::pair<int, int> axis{ SDL_GAMEPAD_BINDTYPE_AXIS, sdl_axis };
+                if (sdl_bindings.contains(axis))
+                {
+                    auto &b = sdl_bindings[axis];
+                    controller.buttons[negative_slot] = EmuBinding::joystick_axis(device.index, b.input.axis.axis, -1);
+                    controller.buttons[positive_slot] = EmuBinding::joystick_axis(device.index, b.input.axis.axis, 1);
+                    for (int i = negative_slot; i <= positive_slot; i++)
+                        bindings.insert({ controller.buttons[i].hash(), { "Snes9x", Core } });
+                }
+            };
+            do_axis(SDL_GAMEPAD_AXIS_LEFTY, 12, 13);
+            do_axis(SDL_GAMEPAD_AXIS_LEFTX, 14, 15);
+
+            printf("Automapping XInput Gamepad: %s\n", SDL_GetGamepadName(device.gamepad));
+
+            config->additional_controllers.push_back(controller);
+        }
+    }
+
     suspendThread();
     core->updateBindings(config.get());
     unsuspendThread();
 }
 
-void EmuApplication::handleBinding(std::string name, bool pressed)
+void EmuApplication::handleBinding(const std::string &name, bool pressed)
 {
     if (core->active)
     {
@@ -386,9 +455,13 @@ void EmuApplication::handleBinding(std::string name, bool pressed)
     {
         window->openFile();
     }
+    else if (name == "Quit" && pressed)
+    {
+        window->close();
+    }
 }
 
-bool EmuApplication::isBound(EmuBinding b)
+bool EmuApplication::isBound(const EmuBinding &b)
 {
     if (bindings.find(b.hash()) != bindings.end())
         return true;
@@ -424,46 +497,51 @@ void EmuApplication::updateSettings()
 
 void EmuApplication::pollJoysticks()
 {
-    while (1)
+    while (true)
     {
-        auto event = input_manager->ProcessEvent();
+        auto event = input_manager->processEvent();
         if (!event)
             return;
 
         switch (event->type)
         {
-        case SDL_JOYDEVICEADDED:
-        case SDL_JOYDEVICEREMOVED:
+        default:
+            break;
+        case SDL_EVENT_JOYSTICK_ADDED:
+        case SDL_EVENT_JOYSTICK_REMOVED:
             if (joypads_changed_callback)
                 joypads_changed_callback();
+            if (core)
+                updateBindings();
             break;
-        case SDL_JOYAXISMOTION: {
-            auto axis_event = input_manager->DiscretizeJoyAxisEvent(event.value());
-            if (axis_event)
+        case SDL_EVENT_JOYSTICK_AXIS_MOTION: {
+            auto axis_events = input_manager->discretizeJoyAxisEvent(event.value());
+
+            for (auto &axis_event : axis_events)
             {
                 auto binding = EmuBinding::joystick_axis(
-                    axis_event->joystick_num,
-                    axis_event->axis,
-                    axis_event->direction);
+                    axis_event.joystick_num,
+                    axis_event.axis,
+                    axis_event.direction);
 
-                reportBinding(binding, axis_event->pressed);
+                reportBinding(binding, axis_event.pressed);
             }
             break;
         }
-        case SDL_JOYBUTTONDOWN:
-        case SDL_JOYBUTTONUP:
+        case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
+        case SDL_EVENT_JOYSTICK_BUTTON_UP:
             reportBinding(EmuBinding::joystick_button(
                               input_manager->devices[event->jbutton.which].index,
-                              event->jbutton.button), event->jbutton.state == 1);
+                              event->jbutton.button), event->jbutton.down == 1);
             break;
-        case SDL_JOYHATMOTION:
-            auto hat_event = input_manager->DiscretizeHatEvent(event.value());
-            if (hat_event)
+        case SDL_EVENT_JOYSTICK_HAT_MOTION:
+            auto hat_events = input_manager->discretizeHatEvent(event.value());
+            for (auto &hat_event : hat_events)
             {
-                reportBinding(EmuBinding::joystick_hat(hat_event->joystick_num,
-                                                       hat_event->hat,
-                                                       hat_event->direction),
-                              hat_event->pressed);
+                reportBinding(EmuBinding::joystick_hat(hat_event.joystick_num,
+                                                       hat_event.hat,
+                                                       hat_event.direction),
+                              hat_event.pressed);
             }
 
             break;
@@ -502,7 +580,7 @@ void EmuApplication::loadState(int slot)
     });
 }
 
-void EmuApplication::loadState(std::string filename)
+void EmuApplication::loadState(const std::string& filename)
 {
     emu_thread->runOnThread([&, filename] {
         core->loadState(filename);
@@ -516,7 +594,7 @@ void EmuApplication::saveState(int slot)
     });
 }
 
-void EmuApplication::saveState(std::string filename)
+void EmuApplication::saveState(const std::string& filename)
 {
     emu_thread->runOnThread([&, filename] {
         core->saveState(filename);
@@ -579,7 +657,8 @@ void EmuApplication::disableCheat(int index)
     });
 }
 
-bool EmuApplication::addCheat(std::string description, std::string code)
+bool EmuApplication::addCheat(const std::string &description,
+                              const std::string &code)
 {
     suspendThread();
     auto retval = core->addCheat(description, code);
@@ -601,7 +680,7 @@ void EmuApplication::deleteAllCheats()
     });
 }
 
-int EmuApplication::tryImportCheats(std::string filename)
+int EmuApplication::tryImportCheats(const std::string &filename)
 {
     suspendThread();
     auto retval = core->tryImportCheats(filename);
@@ -609,7 +688,7 @@ int EmuApplication::tryImportCheats(std::string filename)
     return retval;
 }
 
-std::string EmuApplication::validateCheat(std::string code)
+std::string EmuApplication::validateCheat(const std::string &code)
 {
     suspendThread();
     auto retval = core->validateCheat(code);
@@ -617,7 +696,8 @@ std::string EmuApplication::validateCheat(std::string code)
     return retval;
 }
 
-int EmuApplication::modifyCheat(int index, std::string name, std::string code)
+int EmuApplication::modifyCheat(int index, const std::string &name,
+                                const std::string &code)
 {
     suspendThread();
     auto retval = core->modifyCheat(index, name, code);
@@ -647,7 +727,7 @@ std::string EmuApplication::getContentFolder()
     return core->getContentFolder();
 }
 
-void EmuThread::runOnThread(std::function<void()> func, bool blocking)
+void EmuThread::runOnThread(const std::function<void()> &func, bool blocking)
 {
     if (QThread::currentThread() != this)
     {
@@ -663,7 +743,7 @@ void EmuThread::runOnThread(std::function<void()> func, bool blocking)
 }
 
 EmuThread::EmuThread(QThread *main_thread_)
-    : main_thread(main_thread_), QThread()
+    : QThread(), main_thread(main_thread_)
 {
     qRegisterMetaType<std::function<void()>>("std::function<void()>");
 }
@@ -683,7 +763,7 @@ void EmuThread::waitForStatusBit(int new_status)
     if (status & new_status)
         return;
 
-    while (1)
+    while (true)
     {
         QThread::yieldCurrentThread();
         if (status & new_status)
@@ -696,7 +776,7 @@ void EmuThread::waitForStatusBitCleared(int new_status)
     if (!(status & new_status))
         return;
 
-    while (1)
+    while (true)
     {
         QThread::yieldCurrentThread();
         if (!(status & new_status))
@@ -716,11 +796,11 @@ void EmuThread::unpause()
 
 void EmuThread::run()
 {
-    auto event_loop = new QEventLoop();
+    auto event_loop = std::make_unique<QEventLoop>();
 
     setStatusBits(ePaused);
 
-    while (1)
+    while (true)
     {
         event_loop->processEvents();
 
@@ -738,7 +818,7 @@ void EmuThread::run()
     }
 }
 
-void EmuThread::setMainLoop(std::function<void ()> loop)
+void EmuThread::setMainLoop(const std::function<void()> &loop)
 {
     main_loop = loop;
 }
